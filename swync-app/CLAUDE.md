@@ -95,6 +95,20 @@ formats come from `recorder::formats()` rather than a TypeScript list, for the
 same reason `lang.rs` serves the builtins — a dropdown offering something the
 recorder cannot write is a promise broken after the take.
 
+`layout.rs` is the third file in that config directory, and holds the window's
+size and place and how the two side panels were left. Its own file rather than
+a field in the settings because of who writes it: the settings are sent whole
+from the panel that shows them, while a window being dragged is written from
+the backend several times a second and nothing in the frontend knows it moved.
+One file holding both would have each writer flattening the other's half. The
+window is put back in `setup`, before it is shown — which is why the window is
+configured `"visible": false`: one that appeared at the config's size and then
+jumped to the remembered one would have told the truth twice. A remembered
+position on a screen that is not there today is dropped while its size is
+kept, the way `usable_session` drops a file that has been deleted. The panels
+are the frontend's, restored over the defaults it declares, and a view name it
+no longer recognises leaves that panel on the view it starts on.
+
 ## Audio in, and changing devices
 
 `src-tauri/src/audio_in/` is the recorder run backwards, and reading
