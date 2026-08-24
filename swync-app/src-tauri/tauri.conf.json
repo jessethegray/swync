@@ -15,7 +15,8 @@
         "title": "Swync",
         "width": 800,
         "height": 600,
-        "dragDropEnabled": true
+        "dragDropEnabled": true,
+        "visible": false
       }
     ],
     "security": {

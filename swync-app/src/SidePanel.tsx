@@ -12,6 +12,18 @@ const LABELS: Record<SideTab, string> = {
   problems: "Problems",
 };
 
+/**
+ * Whether a name off disk is still one of this panel's views.
+ *
+ * Beside the labels because that is the list: a view that has been renamed or
+ * dropped since the layout was written is not an error, and the caller falls
+ * back to the view the panel starts on. The same answer `usable_session` gives
+ * about a file that is no longer there.
+ */
+export function isSideTab(name: string): name is SideTab {
+  return name in LABELS;
+}
+
 interface SidePanelProps {
   open: boolean;
   /** Pixels wide, as the drag handle has left it. */

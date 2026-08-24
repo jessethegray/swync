@@ -31,6 +31,7 @@ mod diagnostic;
 mod engine;
 mod files;
 mod imports;
+mod layout;
 mod parser;
 mod swync_graph;
 mod lowerer;
@@ -655,6 +656,114 @@ fn set_settings(
     midi.set_offset_ms(settings.midi_offset_ms);
     follow_clock(settings.midi_clock_source.as_deref());
     settings::write(&config_file(&app, settings::FILE)?, &settings)
+}
+
+/// The screens there are today, for judging a remembered window against.
+///
+/// A platform that will not say has none, which `layout::usable` reads as
+/// nothing to check rather than nowhere to open.
+fn screens(window: &tauri::Window) -> Vec<layout::Rect> {
+    window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|screen| {
+            let at = screen.position();
+            let size = screen.size();
+            layout::Rect { x: at.x, y: at.y, width: size.width, height: size.height }
+        })
+        .collect()
+}
+
+/// Where the window is now, given what was remembered of it before.
+///
+/// `None` is a window there is nothing new to say about — one that is
+/// minimized, or that the platform would not measure — and the caller keeps
+/// what it had rather than writing a window nobody made.
+fn measured(window: &tauri::Window, before: Option<layout::Window>) -> Option<layout::Window> {
+    // Minimizing is a resize on some platforms, to nothing at all on Windows.
+    // It is not a size anybody chose and not one to open on.
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
+
+    let maximized = window.is_maximized().unwrap_or(false);
+    // A maximized or fullscreen window is the size of a screen rather than of
+    // anybody's choice, so what is kept is the size it had before it was —
+    // which is what un-maximizing a restored window gives back. Only on the
+    // first run, with nothing remembered to keep, is the screen's own size
+    // better than nothing.
+    if maximized || window.is_fullscreen().unwrap_or(false) {
+        if let Some(before) = before {
+            return Some(layout::Window { maximized, ..before });
+        }
+    }
+
+    let size = window.outer_size().ok()?;
+    let at = window.outer_position().ok()?;
+    if size.width == 0 || size.height == 0 {
+        return None;
+    }
+    Some(layout::Window {
+        position: Some(layout::Position { x: at.x, y: at.y }),
+        width: size.width,
+        height: size.height,
+        maximized,
+    })
+}
+
+/// Put the window back where it was left, and show it.
+///
+/// Before it is shown rather than after, which is the whole reason the window
+/// starts hidden in `tauri.conf.json`: a window that appears at the size in
+/// the config and then jumps to the remembered one has told the truth twice,
+/// and the first time was wrong.
+///
+/// Every step of it is allowed to fail. A window that cannot be placed is
+/// still a window, and the last line — the one that shows it — must run
+/// whatever the rest of this did.
+fn restore_window(window: &tauri::Window, saved: Option<layout::Window>) {
+    if let Some(saved) = saved.and_then(|saved| layout::usable(saved, &screens(window))) {
+        let _ = window.set_size(tauri::PhysicalSize::new(saved.width, saved.height));
+        if let Some(at) = saved.position {
+            let _ = window.set_position(tauri::PhysicalPosition::new(at.x, at.y));
+        }
+        // After the size, so what un-maximizing gives back is that size.
+        if saved.maximized {
+            let _ = window.maximize();
+        }
+    }
+    let _ = window.show();
+}
+
+/// How the window was arranged last time, for the frontend to open on.
+///
+/// What it reads is the panels. The window's own size and place are in the
+/// answer because they are in the layout, but they are already applied by the
+/// time anything can ask: they go back before the window is shown, so there is
+/// nothing left for the frontend to do about them and nothing it could do that
+/// would not arrive as a jump. See `layout.rs`.
+#[tauri::command]
+fn panels(remembered: tauri::State<layout::Writer>) -> layout::Layout {
+    remembered.current()
+}
+
+/// Remember them. Called as a panel is opened, switched or dragged, the way
+/// the session is written as tabs are opened and closed.
+///
+/// Both at once rather than one at a time because that is how the frontend
+/// holds them — one render describes both panels — and because a change to
+/// either is the same file either way.
+#[tauri::command]
+fn set_panels(
+    remembered: tauri::State<layout::Writer>,
+    left: layout::Panel,
+    right: layout::Panel,
+) {
+    remembered.change(|saved| {
+        saved.left = Some(left);
+        saved.right = Some(right);
+    });
 }
 
 /// Point the transport at a clock to follow, or at none.
@@ -1660,6 +1769,31 @@ pub fn run() {
                 let _ = app.emit(id, ());
             }
         })
+        .on_window_event(|window, event| {
+            // Where the window is left is where it opens next time. Nothing
+            // reaches the disk while it is being dragged — the writer lets the
+            // burst settle first, the way the project watcher does.
+            let Some(writer) = window.try_state::<layout::Writer>() else {
+                // Before the setup below has run, which is a window that has
+                // not been placed yet: there is nothing about it worth
+                // remembering, and nowhere to put it.
+                return;
+            };
+            let remember = || {
+                writer.change(|saved| saved.window = measured(window, saved.window).or(saved.window))
+            };
+            match event {
+                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => remember(),
+                // On the way out, and written straight through: the settling
+                // delay is longer than the last drag before a quit, and a
+                // debounce that outlives the app remembers nothing.
+                tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed => {
+                    remember();
+                    writer.flush();
+                }
+                _ => {}
+            }
+        })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -1699,6 +1833,8 @@ pub fn run() {
             language_metadata,
             settings,
             set_settings,
+            panels,
+            set_panels,
             recording_formats,
             start_recording,
             stop_recording,
@@ -1715,6 +1851,28 @@ pub fn run() {
             watch_project
         ])
         .setup(|app| {
+            // The window, before anything else: it starts hidden so it can be
+            // put back where it was without appearing at the config's size
+            // first, and everything below this line is work somebody would
+            // otherwise be watching a blank screen through.
+            //
+            // The layout is managed in the same breath, because the events
+            // that keep it up to date arrive the moment the window is placed —
+            // including from the placing itself. A machine with no config
+            // directory to write to remembers nothing, here or in the
+            // settings, and still runs: it opens the same way every time,
+            // which is what a first run does.
+            let layout_file = config_file(app.handle(), layout::FILE).ok();
+            let remembered_layout =
+                layout_file.as_deref().map(layout::read).unwrap_or_default();
+            let remembered_window = remembered_layout.window;
+            app.manage(layout::Writer::start(layout_file, remembered_layout));
+            // The window under the webview: what the events above hand back,
+            // and the half of the pair that can be measured and placed.
+            if let Some(window) = app.get_webview_window("main") {
+                restore_window(&window.as_ref().window(), remembered_window);
+            }
+
             // What was chosen last time. Read before the engine starts because
             // which device it opens — and so what rate everything downstream
             // is built for — is the first thing decided here.

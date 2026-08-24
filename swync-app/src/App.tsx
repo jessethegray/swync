@@ -22,7 +22,7 @@ import { ProblemsPanel, type RunStatus } from "./ProblemsPanel";
 import { ProjectPanel } from "./ProjectPanel";
 import { isWithin } from "./projectTree";
 import { PatternComposer } from "./PatternComposer";
-import { RightPanel, type RightTab } from "./RightPanel";
+import { RightPanel, isRightTab, type RightTab } from "./RightPanel";
 import {
   SettingsPanel,
   type AudioDevices,
@@ -35,7 +35,7 @@ import {
 } from "./SettingsPanel";
 import { SearchPanel, type Results as SearchResults } from "./SearchPanel";
 import { ControlsPanel, type Control } from "./ControlsPanel";
-import { SidePanel, type SideTab } from "./SidePanel";
+import { SidePanel, isSideTab, type SideTab } from "./SidePanel";
 import { toDiagnostic, type Diagnostic } from "./diagnostics";
 import { TransportPanel } from "./TransportPanel";
 import {
@@ -105,6 +105,10 @@ const FADE_OUT_DELAY = 250;
 /** How long the app waits before writing the session out. Switching tabs and
  *  closing them come in bursts, and none of it is worth a write each. */
 const SESSION_SAVE_DELAY = 400;
+
+/** And before writing the panels out. A drag is a width a frame, and the
+ *  backend lets the burst settle again on its side — see `layout.rs`. */
+const PANEL_SAVE_DELAY = 400;
 
 interface Tab {
   id: string;
@@ -183,6 +187,28 @@ interface Session {
   active: number | null;
 }
 
+/** One side panel as `panels` remembers it. Mirrors `Panel` in `layout.rs`,
+ *  which keeps the view as a bare name because which views a panel has is
+ *  this side's business. */
+interface PanelLayout {
+  open: boolean;
+  width: number;
+  view: string;
+}
+
+/**
+ * How the window was arranged last time.
+ *
+ * The window's own size and place are not in it, and that is not an omission:
+ * the backend puts those back before the window is ever shown, because a
+ * window that appeared at one size and then jumped to another would have told
+ * the truth twice. See `layout.rs`.
+ */
+interface Layout {
+  left: PanelLayout | null;
+  right: PanelLayout | null;
+}
+
 /** True for a tab holding code, as against a composer — including one that is
  *  still waiting for its pattern, which has no buffer to run either. */
 function isCode(tab: Tab): boolean {
@@ -221,6 +247,13 @@ const DEFAULT_PANEL = 288;
  *  want a little more room than the transport's controls do. */
 const DEFAULT_SIDE_PANEL = 340;
 
+/** Hold a panel's width to what the window can usefully show — the same
+ *  bounds a drag is held to, applied again to a width read off disk, which is
+ *  a file in a config folder and so a file somebody can edit. */
+function clampPanel(width: number): number {
+  return Math.min(MAX_PANEL, Math.max(MIN_PANEL, width));
+}
+
 /**
  * Drag a panel's inner edge.
  *
@@ -242,7 +275,7 @@ function usePanelResize(edge: "left" | "right", setWidth: (width: number) => voi
       const onMove = (ev: PointerEvent) => {
         const width =
           (edge === "left" ? ev.clientX : window.innerWidth - ev.clientX) - TRAY;
-        setWidth(Math.min(MAX_PANEL, Math.max(MIN_PANEL, width)));
+        setWidth(clampPanel(width));
       };
       const onUp = () => {
         handle.removeEventListener("pointermove", onMove);
@@ -311,6 +344,12 @@ function App() {
   const [sideOpen, setSideOpen] = useState(false);
   const [sideWidth, setSideWidth] = useState(DEFAULT_SIDE_PANEL);
   const [sideTab, setSideTab] = useState<SideTab>("project");
+  // Whether the panels above and to the right are still the defaults they were
+  // declared with, or have been given back what the last session left them as.
+  // Nothing is written until they have: the arrangement on screen for the
+  // first frames of a launch is this file's guess, and writing that guess down
+  // would be the app forgetting the moment it started.
+  const [panelsRestored, setPanelsRestored] = useState(false);
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   /** Whether anything in the panel actually stopped a run, which is what
    *  decides the badge's colour: a program that compiled and merely had
@@ -597,6 +636,57 @@ function App() {
       live = false;
     };
   }, []);
+
+  // How the panels were left, fetched once and taken on as it arrives.
+  //
+  // A view whose name means nothing any more — renamed or dropped since the
+  // file was written — leaves that panel on the view it starts on, which is
+  // the answer the session gives about a file that has moved: what cannot be
+  // restored simply does not come back, and none of it is worth an error.
+  //
+  // The window's own size is not here. The backend has already put it back,
+  // before the window was shown.
+  useEffect(() => {
+    let live = true;
+    invoke<Layout>("panels")
+      .then((saved) => {
+        if (!live) return;
+        if (saved.left) {
+          setSideOpen(saved.left.open);
+          if (Number.isFinite(saved.left.width)) setSideWidth(clampPanel(saved.left.width));
+          if (isSideTab(saved.left.view)) setSideTab(saved.left.view);
+        }
+        if (saved.right) {
+          setPanelOpen(saved.right.open);
+          if (Number.isFinite(saved.right.width)) setPanelWidth(clampPanel(saved.right.width));
+          if (isRightTab(saved.right.view)) setPanelTab(saved.right.view);
+        }
+      })
+      // Logged rather than shown, and the panels are let write again either
+      // way: what it costs is a launch that opens on the defaults, and what
+      // this session does with them is still worth remembering.
+      .catch((e) => console.error("could not read the last layout:", e))
+      .finally(() => {
+        if (live) setPanelsRestored(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // And back out again as a panel is opened, shut, switched or dragged.
+  // Debounced like the session and the font size: a drag is one arrangement,
+  // however many widths it passes through on the way.
+  useEffect(() => {
+    if (!panelsRestored) return;
+    const timer = setTimeout(() => {
+      void invoke("set_panels", {
+        left: { open: sideOpen, width: sideWidth, view: sideTab },
+        right: { open: panelOpen, width: panelWidth, view: panelTab },
+      }).catch((e) => console.error("could not remember the panels:", e));
+    }, PANEL_SAVE_DELAY);
+    return () => clearTimeout(timer);
+  }, [panelsRestored, sideOpen, sideWidth, sideTab, panelOpen, panelWidth, panelTab]);
 
   /** Change a setting: the panel shows it at once, and it is remembered. */
   const changeSettings = useCallback(

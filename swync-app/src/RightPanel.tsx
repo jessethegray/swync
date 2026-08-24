@@ -21,6 +21,12 @@ const GLYPHS: Record<RightTab, ReactNode> = {
   settings: icons.settings,
 };
 
+/** Whether a name off disk is still one of this panel's views — see
+ *  `isSideTab`, which answers the same question for the other panel. */
+export function isRightTab(name: string): name is RightTab {
+  return name in LABELS;
+}
+
 interface RightPanelProps {
   open: boolean;
   /** Pixels wide, as the drag handle has left it. */
