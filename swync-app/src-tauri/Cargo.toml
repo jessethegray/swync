@@ -1,6 +1,6 @@
 [package]
 name = "swync"
-version = "0.0.6"
+version = "0.0.7"
 description = "A Tauri App"
 authors = ["Jesse Raccio"]
 edition = "2021"
