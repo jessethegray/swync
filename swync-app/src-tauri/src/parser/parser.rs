@@ -106,6 +106,12 @@ pub enum Expr {
     Index { base: Box<Expr>, index: Box<Expr> },
     Let { name: Ident, value: Box<Expr>, body: Box<Expr> },
     List(Vec<ListItem>),
+    /// `match bar % 4 { 0 => kick, 1 | 3 => hat, _ => ` }`.
+    ///
+    /// Arms are tried in the order they are written and the first that matches
+    /// is the one the expression is worth, so an earlier arm shadows a later
+    /// one exactly as it reads.
+    Match { subject: Box<Expr>, arms: Vec<MatchArm> },
     Mul   { lhs: Box<Expr>, rhs: Box<Expr> },
     Neg { expr: Box<Expr> },
     Num(f64),
@@ -150,6 +156,61 @@ impl ListItem {
     }
 }
 
+impl Pattern {
+    /// The names this pattern binds, in the order they are written.
+    ///
+    /// Two passes have to agree about this exactly, which is why there is one
+    /// copy of it and it lives beside the type rather than inside either of
+    /// them. The lowerer defines what a binding *is*; the rename walk that
+    /// expansion runs has to know the same answer, because a name it thought
+    /// was a mention would be rewritten to whatever the file imported under
+    /// it — turning `match n { q => … }` into a program about somebody else's
+    /// `q`.
+    pub fn bindings(&self, out: &mut Vec<Ident>) {
+        match self {
+            Pattern::Name(id) if binds(&id.0) => out.push(id.clone()),
+            Pattern::List(items) | Pattern::Or(items) => {
+                for item in items {
+                    item.bindings(out);
+                }
+            }
+            // A range's ends are read, not written; a `Member` reaches through
+            // an enum; a `Name` that did not bind stands for a value.
+            Pattern::Wild
+            | Pattern::Num(_)
+            | Pattern::Name(_)
+            | Pattern::Member { .. }
+            | Pattern::Range { .. }
+            | Pattern::Rest
+            | Pattern::Trigger => {}
+        }
+    }
+}
+
+/// Whether a bare name in pattern position binds the subject, or stands for the
+/// value it spells.
+///
+/// The exception is the language's own two tables, and it is there because of
+/// what this language is for. `match step { c4 => … }` has one reading anybody
+/// means, and under Rust's rule — every bare name binds — it would silently
+/// bind `c4` and take that arm for every note there is. Nothing about the text
+/// would say so.
+///
+/// The order is [`Expr::Var`]'s own, minus the environment: the tuplet marker,
+/// then a written note value, then a note. A pitch class spelled without an
+/// octave — `a`, `ef` — binds, because in a pattern there is no sequence to
+/// have said which octave, and refusing would cost the most ordinary binding
+/// names in the language.
+pub fn binds(name: &str) -> bool {
+    if name == crate::lang::TUPLET || crate::lang::duration(name).is_some() {
+        return false;
+    }
+    !matches!(
+        crate::lang::note(name),
+        crate::lang::NoteName::Note { .. } | crate::lang::NoteName::OctaveOutOfRange(_)
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CmpOp { Lt, Le, Gt, Ge, Eq, Ne }
 
@@ -160,9 +221,61 @@ pub enum Statement {
     Expr(Expr),
 }
 
-#[allow(dead_code)]
+/// One arm of a `match`: what it answers to, and what it is worth.
+///
+/// The guard is an ordinary expression read inside the arm's own scope, so it
+/// sees whatever the pattern bound — `n if n > 60` is the reason bindings are
+/// pushed before the guard is asked rather than after it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Expr,
+}
+
+/// What one `match` arm answers to.
+///
+/// A tree of its own rather than an [`Expr`], because the two are read in
+/// opposite directions: an expression is evaluated to produce a value, while a
+/// pattern is handed one and asked whether it fits. The overlap in spelling —
+/// `440`, `Scale.major`, `[a, b]` — is exactly why they cannot share a type:
+/// `a` in an expression is a name being *read*, and in a pattern it is a name
+/// being *written*.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Pattern {
-    Ident(Ident)
+    /// `_` — fits anything and binds nothing.
+    Wild,
+    /// `440`, `-12`.
+    Num(f64),
+    /// A bare name. Whether it binds the subject or stands for a note or a
+    /// written value is not decided here: the parser has no tables to ask, and
+    /// `c4` and `q` are spelled exactly as `n` is. See the lowerer.
+    Name(Ident),
+    /// `Section.verse` — one member of one enum, matched as a tag.
+    ///
+    /// A shape of its own rather than the [`Expr::Chain`] the same text builds
+    /// in an expression, because only here is the right-hand side certainly a
+    /// member: a pattern has no receiver to call a method on.
+    Member { ty: Ident, member: Ident },
+    /// `0..=3`, inclusive at both ends.
+    ///
+    /// The ends are expressions rather than patterns, and are read where the
+    /// `match` is written: nothing binds in that position, so a name there is a
+    /// name being read like any other — `root..=root + 12` means what it says.
+    Range { lo: Expr, hi: Expr },
+    /// `[a, 0, Scale.major]` — a list of exactly that length, element by
+    /// element.
+    List(Vec<Pattern>),
+    /// A silent step, written `` ` ``.
+    Rest,
+    /// A sounding step carrying no value, written `\`.
+    ///
+    /// A bare trigger and nothing else: a written note value is a hit of that
+    /// length, and the length is a thing it carries that this does not, so `q`
+    /// is matched by its own name rather than swept up here.
+    Trigger,
+    /// `1 | 3 | 5` — one arm answering to several patterns.
+    Or(Vec<Pattern>),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -427,7 +540,7 @@ fn pattern_name(pattern: &RichPattern<'_, Token>) -> (u8, String) {
                 Token::Comma | Token::Colon | Token::Assign | Token::Term => 1,
                 Token::ParensOpen | Token::BracketOpen | Token::BraceOpen => 2,
                 Token::Else | Token::For | Token::Function | Token::If
-                | Token::In | Token::Let | Token::Use => 2,
+                | Token::In | Token::Let | Token::Match | Token::Use => 2,
                 _ => 3,
             };
             (rank, format!("`{}`", &**token))
@@ -582,6 +695,125 @@ where I: ValueInput<'a, Token = Token, Span = SimpleSpan> {
                 })
         });
 
+        // A pattern, and the arm it heads. Built here rather than beside
+        // `expr` for the one thing it needs from this scope: a range's ends and
+        // a guard are ordinary expressions, and the recursive handle is the
+        // only way to reach them.
+        let pattern = recursive(|pattern| {
+            // A range end. Only a number or a name, where the expression
+            // grammar would take anything: `..=` is already an expression
+            // operator, so handing this position to `expr` would have `0..=3`
+            // parse as one `Expr::Range` before the pattern ever saw a range.
+            let bound = choice((
+                just(Token::Sub)
+                    .or_not()
+                    .then(select! { Token::Num(n) => n })
+                    .map(|(neg, n)| Expr::Num(if neg.is_some() { -n } else { n })),
+                name().map(Expr::Var),
+            ));
+
+            let range = bound
+                .clone()
+                .then_ignore(just(Token::DotDotEq))
+                .then(bound)
+                .map(|(lo, hi)| Pattern::Range { lo, hi });
+
+            let member = name()
+                .then_ignore(just(Token::Dot))
+                .then(ident())
+                .map(|(ty, member)| Pattern::Member { ty, member });
+
+            let number = just(Token::Sub)
+                .or_not()
+                .then(select! { Token::Num(n) => n })
+                .map(|(neg, n)| Pattern::Num(if neg.is_some() { -n } else { n }));
+
+            // `_` lexes as an ordinary name, so the wildcard is told from a
+            // binding here rather than in the lexer — which keeps `_` usable as
+            // a name everywhere else, where it has never meant anything special.
+            let bare = ident().map(|id| match id.0.as_str() {
+                "_" => Pattern::Wild,
+                _ => Pattern::Name(id),
+            });
+
+            let list = pattern
+                .separated_by(just(Token::Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .delimited_by(just(Token::BracketOpen), just(Token::BracketClose))
+                .map(Pattern::List);
+
+            // The two steps that carry no value, spelled as they are in a
+            // sequence. Tokens of their own, so there is nothing for them to be
+            // ordered against.
+            let rest = just(Token::Rest).to(Pattern::Rest);
+            let trigger = just(Token::Trigger).to(Pattern::Trigger);
+
+            // `range` before `number` and `member` before `bare`: both pairs
+            // start alike, and `choice` commits to the first branch that
+            // succeeds — a number-first order would read `0..=3` as the pattern
+            // `0` and leave `..=3` for the arrow.
+            let atom = choice((list, range, member, number, rest, trigger, bare));
+
+            // A leading `|` is allowed and means nothing, so a long list of
+            // alternatives can be written with every one of them in the same
+            // column.
+            just(Token::Pipe)
+                .or_not()
+                .ignore_then(
+                    atom.separated_by(just(Token::Pipe))
+                        .at_least(1)
+                        .collect::<Vec<_>>(),
+                )
+                .map(|mut alts| match alts.len() {
+                    1 => alts.pop().expect("just checked there is one"),
+                    _ => Pattern::Or(alts),
+                })
+                // Every combinator here is a type, and they nest: unboxed, the
+                // pattern parser inside the expression recursion produced a
+                // monomorphized name long enough for the macOS linker to refuse
+                // it outright. Boxing costs one indirection per pattern parsed,
+                // once, while the program is being read.
+                .boxed()
+        });
+
+        let arm = pattern
+            .then(just(Token::If).ignore_then(expr.clone()).or_not())
+            .then_ignore(just(Token::FatArrow))
+            .then(expr.clone())
+            .map(|((pattern, guard), body)| MatchArm { pattern, guard, body });
+
+        // Arms separate on a comma *or* a line break, and any number of
+        // either — the same rule an `enum`'s members follow, for the same
+        // reason: the lexer does not track brace depth, so a list written over
+        // lines arrives with `Term`s between its entries and a one-line list
+        // arrives with commas. See `enum_item`.
+        let arm_sep = choice((
+            just(Token::Comma).ignored(),
+            just(Token::Term).ignored(),
+        ))
+        .repeated()
+        .at_least(1);
+
+        let match_expr = just(Token::Match)
+            .ignore_then(expr.clone())
+            .then(
+                arm.separated_by(arm_sep)
+                    .allow_leading()
+                    .allow_trailing()
+                    .collect::<Vec<_>>()
+                    .delimited_by(just(Token::BraceOpen), just(Token::BraceClose)),
+            )
+            .try_map(|(subject, arms), span| match arms.is_empty() {
+                // Not an expression at all: there is no arm for it to be worth,
+                // and every other reading would be inventing a value.
+                true => Err(Rich::custom(span, "a `match` needs at least one arm — \
+                                                write `_ => …` for the value it is \
+                                                worth when nothing else fits")),
+                false => Ok(Expr::Match { subject: Box::new(subject), arms }),
+            })
+            .boxed();
+
         let let_expr = just(Token::Let)
             .ignore_then(ident())
             .then_ignore(just(Token::Assign))
@@ -599,8 +831,8 @@ where I: ValueInput<'a, Token = Token, Span = SimpleSpan> {
         let trigger = just(Token::Trigger).to(Expr::Trigger);
 
         let atom = choice((
-            int, string, rest, trigger, list, for_expr, if_expr, let_expr, block, call, var,
-            paren,
+            int, string, rest, trigger, list, for_expr, if_expr, match_expr, let_expr,
+            block, call, var, paren,
         ));
 
         // Indexing and method calls share one fold so they interleave freely:

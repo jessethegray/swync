@@ -14,7 +14,7 @@
 //! walk was written twice — see the note on [`walk`] about exhaustiveness,
 //! which is only worth anything if there is one copy of it to be exhaustive.
 
-use crate::parser::parser::{Arg, Expr, Ident, Statement, SwyncItem};
+use crate::parser::parser::{Arg, Expr, Ident, Pattern, Statement, SwyncItem};
 
 /// Visit every call in a program, in the order they are written.
 ///
@@ -108,6 +108,20 @@ fn walk(e: &Expr, visit: &mut impl FnMut(&Ident, &[Arg])) {
             }
         }
 
+        // A range's ends are the only expressions a pattern holds, and a call
+        // is as findable in one as anywhere else: `0..=bars()` names a
+        // function, and a `load` could just as well be written there.
+        Expr::Match { subject, arms } => {
+            walk(subject, visit);
+            for arm in arms {
+                walk_pattern(&arm.pattern, visit);
+                if let Some(guard) = &arm.guard {
+                    walk(guard, visit);
+                }
+                walk(&arm.body, visit);
+            }
+        }
+
         Expr::Index { base, index } => {
             walk(base, visit);
             walk(index, visit);
@@ -139,5 +153,32 @@ fn walk(e: &Expr, visit: &mut impl FnMut(&Ident, &[Arg])) {
 
         // Leaves.
         Expr::Num(_) | Expr::Str(_) | Expr::Rest | Expr::Trigger | Expr::Var(_) => {}
+    }
+}
+
+/// The expressions inside one pattern, which are its ranges' ends and nothing
+/// else.
+///
+/// Exhaustive for the reason [`walk`] is: a pattern that grows a place to write
+/// an expression has to be added here, and a wildcard would hide it.
+fn walk_pattern(p: &Pattern, visit: &mut impl FnMut(&Ident, &[Arg])) {
+    match p {
+        Pattern::Range { lo, hi } => {
+            walk(lo, visit);
+            walk(hi, visit);
+        }
+        Pattern::List(items) | Pattern::Or(items) => {
+            for item in items {
+                walk_pattern(item, visit);
+            }
+        }
+        // Leaves. A `Member`'s two names are reached through the enum rather
+        // than called, and a `Name` is being written rather than read.
+        Pattern::Wild
+        | Pattern::Num(_)
+        | Pattern::Name(_)
+        | Pattern::Member { .. }
+        | Pattern::Rest
+        | Pattern::Trigger => {}
     }
 }

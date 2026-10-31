@@ -92,6 +92,11 @@ export const TUTORIAL: TutorialPage[] = [
 		blurb: "Giving a group of related values one name each, and comparing them",
 	},
 	{
+		slug: "match",
+		title: "Match",
+		blurb: "One value, an answer for each thing it might be, and a check that you wrote them all",
+	},
+	{
 		slug: "midi",
 		title: "MIDI",
 		blurb: "Playing your hardware, and letting your hardware play you",

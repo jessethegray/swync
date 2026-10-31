@@ -1207,6 +1207,33 @@ fn a_binding_shadowing_an_enum_is_not_reached_through() {
     assert_eq!(g.nodes[0].inputs[0], NodeInput::Const(8.0));
 }
 
+/// A `match` on an imported enum reaches the same member the expression form
+/// does: the type is a mention and is rewritten, and the member after it is not.
+#[test]
+fn a_match_pattern_reaches_an_imported_enum() {
+    let sections = "enum Section { verse, chorus }\n";
+    assert_eq!(
+        folds_to("use parts::Section\n\
+                  sin(match Section.chorus { Section.verse => 1, Section.chorus => 2 })\n",
+                 &[("/p/parts.swync", sections)]),
+        2.0);
+}
+
+/// The other half of the renamer trap, in the position where it would be
+/// silent. A name a pattern *binds* is not a mention of anything, so a file
+/// that has imported something under that name must not have the binding
+/// rewritten to it — the arm would read correctly and be about somebody else's
+/// definition.
+#[test]
+fn a_name_bound_by_a_pattern_is_not_renamed_to_an_import() {
+    let entry = "use helpers::n\n\
+                 sin(match 7 { n => n * 2 })\n";
+    let items = expand_ok(entry, &[("/p/helpers.swync", "fn n() = 1000\n")]);
+    let g = lower(&items).expect("should lower").graph;
+    assert_eq!(g.nodes[0].inputs[0], NodeInput::Const(14.0),
+               "the arm is about its own `n`, not the imported one");
+}
+
 /// A module's enum keeps its written name in messages: the reader wrote
 /// `use tones::Scale`, and has never seen the spelling expansion filed it under.
 #[test]

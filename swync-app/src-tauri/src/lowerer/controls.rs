@@ -227,6 +227,24 @@ mod tests {
         assert!(controls::baked_by_name("pitch"), "a number reading should be marked");
     }
 
+    /// A `match` chooses its arm while the program compiles, so a slider it is
+    /// matched on is read as the position it was standing at — the same answer
+    /// `if` gets, and marked as baked for the same reason. A plain signal has
+    /// no such answer and is refused.
+    #[test]
+    fn a_slider_matched_on_is_the_position_it_was_standing_at() {
+        let _controls = exclusive();
+        let g = lower_src(
+            "sin(match slider(\"pick\", 0, 100, 70) { 0..=50 => 220, _ => 440 })\n"
+        ).unwrap();
+
+        // By kind rather than by index: reading a slider as a number still
+        // builds the node it would have been, and leaves it unreferenced.
+        let sin = g.nodes.iter().find(|n| n.kind == NodeKind::Sin).expect("a sin");
+        assert_eq!(sin.inputs[0], NodeInput::Const(440.0));
+        assert!(controls::baked_by_name("pick"), "a matched reading should be marked");
+    }
+
     /// Read as a number in one place and as a signal in another, it is still
     /// one slider — and it is marked, because a drag that is heard in one
     /// place and not the other is a drag the panel has to warn about.

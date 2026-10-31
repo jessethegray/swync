@@ -275,6 +275,11 @@ impl Lowerer {
                 result
             }
             
+            // In `lowerer::matching`, which is long enough to be worth its own
+            // file — a pattern is a second little language, read in the
+            // opposite direction from everything else here.
+            Expr::Match { subject, arms } => self.match_expr(subject, arms),
+
             Expr::Mul { lhs, rhs } =>
                 self.binop(NodeKind::Mul, |a, b| a * b, lhs, rhs),
             
@@ -479,7 +484,7 @@ impl Lowerer {
         }
     }
 
-    fn number(&mut self, e: &Expr, what: &str) -> Result<f64, String> {
+    pub(crate) fn number(&mut self, e: &Expr, what: &str) -> Result<f64, String> {
         let v = self.expr(e)?;
         self.as_number(v, what)
     }
