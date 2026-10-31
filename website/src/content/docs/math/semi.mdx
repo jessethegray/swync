@@ -3,8 +3,16 @@ name: semi
 params: [note, semitones]
 arities: [2]
 variadic: false
-receives: number
-returns: number
+receives: pattern
+returns: any
 ---
 
 Transpose a MIDI note by semitones: `60.semi(7)` is 67.
+
+A list is transposed note by note — `[c4;q, ef, g].semi(7)`.
+Each note keeps the `;` length it was written with, and a rest stays a rest.
+A nested list moves along with everything else,
+so a subdivision group transposes as a group.
+
+Going through `map` or a `for` instead builds a fresh list,
+and a built list carries no lengths — so a written rhythm is lost that way.

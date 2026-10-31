@@ -4,6 +4,12 @@
 //! builtins. Written to read through the dot operator — `60.m2h`,
 //! `x.clamp(0, 1)` — though `m2h(60)` and `60 >> m2h` are the same call.
 //!
+//! Three of them — `oct`, `semi` and `scale` — take a list of notes as well as
+//! one note, because a riff is as natural a subject for them as a pitch is.
+//! That is a property of those three rather than of this file: `60.round` is
+//! arithmetic that happens to land on a note, and a list there is still a
+//! mistake. See [`pitch_op`] and [`over_notes`].
+//!
 //! Signals are rejected rather than silently handled. A per-sample conversion
 //! would need its own graph node, and every use so far is a constant or a
 //! pattern value, which is already a number by the time a voice is lowered.
@@ -12,7 +18,10 @@
 //! A poisoned constant propagates silently into the graph and surfaces as
 //! silence much later, which is miserable to trace back.
 
-use crate::swync_graph::environment::Value;
+use std::rc::Rc;
+
+use crate::lang::ListBuiltin;
+use crate::swync_graph::environment::{Item, Value};
 use crate::lowerer::expr::{as_data, not_this_member, control_number};
 use crate::lowerer::lists::check_arity;
 use crate::lowerer::lower::Lowerer;
@@ -78,6 +87,19 @@ impl Lowerer {
         };
         check_arity(func, args, Some(spec))?;
 
+        // The pitch builtins take a whole list as readily as a single note.
+        // Transposing a riff is the same thought as transposing a note, and a
+        // riff is written as a list — so the list is the subject here rather
+        // than a type error to be routed around with `map`. Taken before the
+        // fold below, which is where a list would otherwise be refused; a list
+        // handed to anything else falls through to it and is refused there, as
+        // it always was.
+        if let Value::List(items) = as_data(&args[0]) {
+            if let Some(op) = pitch_op(func, spec, args)? {
+                return over_notes(func, spec.params[0], items, &op).map(Some);
+            }
+        }
+
         // Every math builtin takes its subject first, which is what makes the
         // dot spelling read: `60.oct(-1)` is `oct(60, -1)`.
         let x = number(func, spec.params[0], &args[0])?;
@@ -138,6 +160,75 @@ impl Lowerer {
         }
         Ok(Some(Value::Number(out)))
     }
+}
+
+/// What one of the pitch builtins does to a single note, or `None` if `func`
+/// is not one of them — which is how the list branch above knows to fall
+/// through.
+///
+/// Read once per call rather than once per note. The interval or the scale is
+/// the same for every note in the list, so re-reading it per element would be
+/// work for nothing — and worse, it would report a bad second argument once per
+/// note instead of once, against the argument where the mistake actually is.
+fn pitch_op(func: &str, spec: &ListBuiltin, args: &[Value]) -> Result<Option<PitchOp>, String> {
+    // The second argument is reached only inside a matched arm, and that is
+    // load-bearing: most names in this table take one argument, so `params[1]`
+    // and `args[1]` do not exist for them. For these three `check_arity` has
+    // already insisted on both.
+    let op: PitchOp = match func {
+        "oct" => {
+            let by = SEMITONES_PER_OCTAVE * number(func, spec.params[1], &args[1])?;
+            Box::new(move |note| note + by)
+        }
+        "semi" => {
+            let by = number(func, spec.params[1], &args[1])?;
+            Box::new(move |note| note + by)
+        }
+        "scale" => {
+            let tones = scale_tones(func, &args[1])?;
+            Box::new(move |note| snap_to_scale(note, &tones))
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(op))
+}
+
+/// One pitch operation, ready to be applied to every note of a list.
+type PitchOp = Box<dyn Fn(f64) -> f64>;
+
+/// `op` applied to every note of a list, and everything else left where it was.
+///
+/// Recursive, because a nested list is a subdivision group — one step holding a
+/// sequence of its own — and a group of notes is as much a thing to transpose
+/// as a single note is. A rest passes through untouched: a rest marks a step
+/// where nothing sounds, so there is no pitch there to move.
+///
+/// Each element is rebuilt with the `length` it arrived with, which is the
+/// reason this exists rather than `riff.map(up)`. A list a builtin *builds*
+/// carries no lengths, so a transposition through `map` or a `for` silently
+/// drops the rhythm the notes were written with; here the elements survive the
+/// operation, so their `;` lengths do too.
+fn over_notes(func: &str, what: &str, items: &[Item], op: &PitchOp) -> Result<Value, String> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let value = match as_data(&item.value) {
+            Value::List(inner) => over_notes(func, what, inner, op)?,
+            Value::Rest => Value::Rest,
+            // Anything else has to be a number, and `number` is what says so —
+            // in the same words it uses when a bare `semi` is handed a signal.
+            other => {
+                let moved = op(number(func, what, other)?);
+                if !moved.is_finite() {
+                    return Err(format!(
+                        "{func} produced {moved}, which cannot be used as a value"
+                    ));
+                }
+                Value::Number(moved)
+            }
+        };
+        out.push(Item { value, length: item.length });
+    }
+    Ok(Value::List(Rc::new(out)))
 }
 
 /// Snap a MIDI note to the nearest tone of `tones`, given as semitone offsets
@@ -287,6 +378,68 @@ mod tests {
         assert!(close(num("60.oct(1)"), 72.0));
         assert!(close(num("60.semi(7)"), 67.0));
         assert!(close(num("60.semi(-1)"), 59.0));
+    }
+
+    /// A riff is written as a list, so transposing one is the same call as
+    /// transposing a note. Every element moves by the same interval.
+    #[test]
+    fn semi_transposes_every_note_of_a_list() {
+        assert!(close(num("[60, 63, 67].semi(7)[0]"), 67.0));
+        assert!(close(num("[60, 63, 67].semi(7)[1]"), 70.0));
+        assert!(close(num("[60, 63, 67].semi(7)[2]"), 74.0));
+        assert!(close(num("len([60, 63, 67].semi(7))"), 3.0));
+    }
+
+    /// A nested list is one step holding a sequence of its own, and a group of
+    /// notes is as much a thing to transpose as a single note — so the interval
+    /// reaches all the way down rather than stopping at the group.
+    #[test]
+    fn semi_moves_a_nested_group_along_with_everything_else() {
+        assert!(close(num("[60, [62, 64]].semi(2)[0]"), 62.0));
+        assert!(close(num("[60, [62, 64]].semi(2)[1][0]"), 64.0));
+        assert!(close(num("[60, [62, 64]].semi(2)[1][1]"), 66.0));
+    }
+
+    /// The subject may be a list, but the interval is still one number: a list
+    /// there is a mistake, and it is named as one rather than being spread
+    /// across the notes.
+    #[test]
+    fn semi_still_wants_a_single_interval() {
+        let e = err("[60, 63].semi([1, 2])[0]");
+        assert!(e.contains("semitones"), "got: {e}");
+    }
+
+    /// An element that is not a note is refused in the words a bare `semi`
+    /// already uses, so the reason reads the same whichever form was written.
+    #[test]
+    fn semi_refuses_a_list_holding_something_that_is_not_a_note() {
+        let e = err("[60, sin(220)].semi(7)[0]");
+        assert!(e.contains("semi: note"), "got: {e}");
+    }
+
+    /// `oct` and `scale` take a list on the same terms `semi` does — they are
+    /// the three operations whose subject is as naturally a riff as one pitch.
+    #[test]
+    fn oct_and_scale_take_a_list_as_well() {
+        assert!(close(num("[60, 63, 67].oct(-1)[0]"), 48.0));
+        assert!(close(num("[60, 63, 67].oct(-1)[2]"), 55.0));
+        assert!(close(num(&format!("[61, 66].scale({MAJOR})[0]")), 60.0));
+        assert!(close(num(&format!("[61, 66].scale({MAJOR})[1]")), 65.0));
+    }
+
+    /// A list reaches every name in this table, not only the three that want
+    /// one, and the rest must refuse it in their own words.
+    ///
+    /// Written against a one-argument name on purpose: reading the interval
+    /// out of a list call means reaching for a second parameter, and most names
+    /// here do not have one. This is the test that keeps that reach behind the
+    /// decision about which name it is.
+    #[test]
+    fn a_list_handed_to_a_name_that_is_not_about_pitch_is_refused() {
+        let e = err("[60, 63].round[0]");
+        assert!(e.contains("round: x"), "got: {e}");
+        let e = err("[60, 63].clamp(0, 12)[0]");
+        assert!(e.contains("clamp: x"), "got: {e}");
     }
 
     #[test]

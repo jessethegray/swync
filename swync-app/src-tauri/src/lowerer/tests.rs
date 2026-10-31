@@ -1856,6 +1856,34 @@ fn note_names_compose_with_methods_and_patterns() {
     ]));
 }
 
+/// `semi` over a list moves the notes and leaves the rests, because a rest
+/// marks a step where nothing sounds and there is no pitch there to move.
+#[test]
+fn transposing_a_list_moves_its_notes_and_leaves_its_rests() {
+    let bs = bindings_of("fn lead(n) = sin(n.m2h)\nplay([c4, ef4, `, g4].semi(2), lead)\n");
+    assert_eq!(bs[0].source.pattern().cloned().expect("a written pattern"), Pattern::seq(vec![
+        Step::Value(62.0), Step::Value(65.0), Step::Rest, Step::Value(69.0),
+    ]));
+}
+
+/// The notes survive the transposition, so the lengths they were written with
+/// survive it too.
+///
+/// This is the whole reason `semi` takes a list rather than leaving the job to
+/// `riff.map(up)`: a list a builtin *builds* carries no lengths, so going round
+/// through `map` flattens `[c4;q, ef4;e]` into an even division of the bar and
+/// the rhythm is gone. Measured in bars per pass, which is where that loss
+/// shows up.
+#[test]
+fn transposing_a_list_keeps_the_lengths_its_notes_were_written_with() {
+    let written = bindings_of("fn lead(n) = sin(n.m2h)\nplayn([c4;q, ef4;e], lead, 4)\n");
+    let moved = bindings_of("fn lead(n) = sin(n.m2h)\nplayn([c4;q, ef4;e].semi(2), lead, 4)\n");
+    // A quarter and an eighth is three eighths of a 4/4 bar, so four passes is
+    // a bar and a half — not the four bars an even division would give.
+    assert_eq!(written[0].bars, Some(1.5));
+    assert_eq!(moved[0].bars, written[0].bars);
+}
+
 /// Every file in `examples/` must parse, lower, and realize.
 ///
 /// A shipped example that does not compile is worse than no example, and these
