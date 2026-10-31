@@ -3201,7 +3201,69 @@ mod stack_tests {
         assert_eq!(moving, vec![0.0, 0.5]);
     }
 
-    /// A stack inside a step is a chord at one point of a longer line, rather
+        /// A one-shot is one pass of every layer, however much their lengths
+    /// differ — what it must not be is one pass of the longest with the short
+    /// ones looping underneath it. A chord whose notes are written at their
+    /// own lengths is the ordinary way to reach this, and struck its two
+    /// eighths three times each under the whole note before `Passes` existed.
+    #[test]
+    fn a_one_shot_sounds_each_layer_once() {
+        let bs = bindings_of(&format!(
+            "{TONE}play_once(stack([`;q, c1;e], [`;q, g1;e], [`;q, b2;w]), tone)\n"));
+        let b = &bs[0];
+        // The longest layer is five quarters: a quarter rest and a whole note.
+        assert_eq!(b.bars, Some(1.25), "a pass is as long as the longest layer");
+
+        let p = b.source.pattern().cloned().expect("a written pattern");
+        let evs = p.query(Span::new(0.0, 1.25));
+        assert_eq!(evs.len(), 3, "one note per layer: {evs:?}");
+        assert!(
+            evs.iter().all(|e| (e.begin - 0.25).abs() < 1e-9),
+            "all three on the second beat: {evs:?}",
+        );
+
+        // And each still as long as it was written — the layer was held to one
+        // pass, not squeezed into the longest one's length.
+        let mut got: Vec<(f64, f64)> = evs.iter().map(|e| (e.value, e.duration())).collect();
+        got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let want = [(24.0, 0.125), (31.0, 0.125), (47.0, 1.0)];
+        for ((v, d), (wv, wd)) in got.iter().zip(want) {
+            assert_eq!(*v, wv);
+            assert!((d - wd).abs() < 1e-9, "{v} lasted {d}, wanted {wd}");
+        }
+    }
+
+    /// The count means the same thing to every layer: two passes is two of
+    /// each, not two of the longest and eight of the shortest.
+    #[test]
+    fn a_counted_play_gives_every_layer_the_same_count() {
+        let bs = bindings_of(&format!("{TONE}playn(stack([c4;q], [e4;w]), tone, 2)\n"));
+        assert_eq!(bs[0].bars, Some(2.0));
+        let p = bs[0].source.pattern().cloned().expect("a written pattern");
+        assert_eq!(onsets(&p, Span::new(0.0, 2.0)), vec![0.0, 0.0, 1.0, 1.0]);
+    }
+
+    /// And the other side of that trade, which is why it is a trade: a plain
+    /// `play` loops, and layers of unequal length phasing against each other
+    /// is what unequal layers are for. Three quarters under a whole note comes
+    /// back into line every three bars.
+    #[test]
+    fn layers_of_unequal_length_still_polymeter_in_a_loop() {
+        let p = pattern_of(&format!(
+            "{TONE}play(stack([c4;q, d4;q, e4;q], [g3;w]), tone)\n"));
+        let evs = p.query(Span::new(0.0, 3.0));
+
+        let moving: Vec<f64> = evs.iter().filter(|e| e.value != 55.0).map(|e| e.begin).collect();
+        assert_eq!(moving.len(), 12, "four passes of three quarters: {moving:?}");
+        for (i, at) in moving.iter().enumerate() {
+            assert!((at - i as f64 * 0.25).abs() < 1e-9, "quarter {i} at {at}");
+        }
+
+        let held: Vec<f64> = evs.iter().filter(|e| e.value == 55.0).map(|e| e.begin).collect();
+        assert_eq!(held, vec![0.0, 1.0, 2.0], "the whole note keeps the bar");
+    }
+
+/// A stack inside a step is a chord at one point of a longer line, rather
     /// than a layer over the whole of it.
     #[test]
     fn a_stack_may_fill_one_step() {

@@ -44,7 +44,7 @@
 use std::rc::Rc;
 
 use crate::lowerer::lower::Lowerer;
-use crate::lowerer::play::{later_end, to_pattern_timed};
+use crate::lowerer::play::{later_end, to_pattern_timed, Passes};
 use crate::parser::parser::Arg;
 use crate::pattern::patterns::{Binding, ChoiceGroup, ChoiceRef};
 use crate::swync_graph::environment::{FunctionDef, Value};
@@ -965,8 +965,11 @@ impl Lowerer {
         };
 
         // A fill is one pass, and a pass is only a bar when the pattern is
-        // written in shares — see `to_pattern_timed`.
-        let (mut pattern, pass_bars) = to_pattern_timed(args.get(1).expect("checked above"), self.meter)?;
+        // written in shares — see `to_pattern_timed`. One pass is a count, so
+        // a stack's layers are held to one apiece rather than left to loop
+        // against the longest of them.
+        let (mut pattern, pass_bars) = to_pattern_timed(
+            args.get(1).expect("checked above"), self.meter, Passes::Counted)?;
         if rate != 1.0 {
             pattern = crate::pattern::pattern::Pattern::fast(rate, pattern);
         }
