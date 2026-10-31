@@ -1,0 +1,20 @@
+---
+name: then_afters
+params: [play, seconds, section]
+arities: [3]
+variadic: false
+receives: play
+returns: play
+---
+
+[then_after](#then_after), in seconds instead of bars:
+`playn(verse, lead, 4).then_afters(1.5, chorus)` leaves a second and a half
+before the chorus.
+
+The seconds are converted to bars at the tempo the program was played at, so
+changing the tempo afterwards stretches the gap along with the music — the
+same bargain [waits](#waits) makes, and for the same reason. How long a bar is
+follows the time signature too, so at 120 bpm two seconds is one bar in 4/4
+and three quarters of one in 3/4.
+
+The gap cannot be negative; [overlap](#overlap) is how a section starts early.
