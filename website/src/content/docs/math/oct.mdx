@@ -3,8 +3,16 @@ name: oct
 params: [note, octaves]
 arities: [2]
 variadic: false
-receives: number
-returns: number
+receives: pattern
+returns: any
 ---
 
 Transpose a MIDI note by whole octaves: `60.oct(-1)` is 48.
+
+A list is transposed note by note — `[c4;q, ef, g].oct(-1)`.
+Each note keeps the `;` length it was written with, and a rest stays a rest.
+A nested list moves along with everything else,
+so a subdivision group transposes as a group.
+
+Going through `map` or a `for` instead builds a fresh list,
+and a built list carries no lengths — so a written rhythm is lost that way.

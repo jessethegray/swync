@@ -886,32 +886,41 @@ pub static MATH_BUILTINS: &[ListBuiltin] = &[
         doc: "Beats per minute to bars per second.",
     },
     // --- pitch arithmetic ---
+    //
+    // These three take a list where the rest of this table takes a number, and
+    // they declare it as `Pattern` — the accept-set being claimed rather than
+    // the musical reading, since a note or a list of them is exactly what a
+    // pattern already means here. `Any` back, because the result follows the
+    // subject: a note in, a note out; a list in, a list out. The others stay
+    // `Number`, which is not an oversight — `60.round` is arithmetic that
+    // happens to be done on a note, while these three are the operations whose
+    // subject is as naturally a riff as a single pitch.
     ListBuiltin {
         name: "oct",
         params: &["note", "octaves"],
         arities: &[2],
         variadic: false,
-        receives: ValueKind::Number,
-        returns: ValueKind::Number,
-        doc: "Transpose a MIDI note by whole octaves: `60.oct(-1)` is 48.",
+        receives: ValueKind::Pattern,
+        returns: ValueKind::Any,
+        doc: "Transpose a MIDI note by whole octaves: `60.oct(-1)` is 48. A list is transposed note by note, keeping each one's `;` length and leaving rests alone — `[c4;q, ef, g].oct(-1)`. Nested lists move with it, so a subdivision group transposes as a group.",
     },
     ListBuiltin {
         name: "semi",
         params: &["note", "semitones"],
         arities: &[2],
         variadic: false,
-        receives: ValueKind::Number,
-        returns: ValueKind::Number,
-        doc: "Transpose a MIDI note by semitones: `60.semi(7)` is 67.",
+        receives: ValueKind::Pattern,
+        returns: ValueKind::Any,
+        doc: "Transpose a MIDI note by semitones: `60.semi(7)` is 67. A list is transposed note by note, keeping each one's `;` length and leaving rests alone — `[c4;q, ef, g].semi(7)`. Nested lists move with it, so a subdivision group transposes as a group.",
     },
     ListBuiltin {
         name: "scale",
         params: &["note", "scale"],
         arities: &[2],
         variadic: false,
-        receives: ValueKind::Number,
-        returns: ValueKind::Number,
-        doc: "Snap a MIDI note to the nearest tone of a scale, given as semitone offsets within an octave: `61.scale([0, 2, 4, 5, 7, 9, 11])` is 60.",
+        receives: ValueKind::Pattern,
+        returns: ValueKind::Any,
+        doc: "Snap a MIDI note to the nearest tone of a scale, given as semitone offsets within an octave: `61.scale([0, 2, 4, 5, 7, 9, 11])` is 60. A list is snapped note by note, keeping each one's `;` length and leaving rests alone, so a whole riff can be bent into a scale at once.",
     },
     // --- ranges and shaping ---
     ListBuiltin {

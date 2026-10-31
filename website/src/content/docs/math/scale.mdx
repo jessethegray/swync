@@ -3,9 +3,14 @@ name: scale
 params: [note, scale]
 arities: [2]
 variadic: false
-receives: number
-returns: number
+receives: pattern
+returns: any
 ---
 
 Snap a MIDI note to the nearest tone of a scale,
 given as semitone offsets within an octave: `61.scale([0, 2, 4, 5, 7, 9, 11])` is 60.
+
+A list is snapped note by note, so a whole riff bends into the scale at once —
+`[c4;q, df, e4].scale([0, 2, 4, 5, 7, 9, 11])`.
+Each note keeps the `;` length it was written with, and a rest stays a rest.
+A nested list is snapped along with everything else.

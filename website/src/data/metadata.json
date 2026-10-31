@@ -1363,9 +1363,9 @@
       ],
       "variadic": false,
       "category": "math",
-      "receives": "number",
-      "returns": "number",
-      "doc": "Transpose a MIDI note by whole octaves: `60.oct(-1)` is 48."
+      "receives": "pattern",
+      "returns": "any",
+      "doc": "Transpose a MIDI note by whole octaves: `60.oct(-1)` is 48. A list is transposed note by note, keeping each one's `;` length and leaving rests alone — `[c4;q, ef, g].oct(-1)`. Nested lists move with it, so a subdivision group transposes as a group."
     },
     {
       "name": "semi",
@@ -1378,9 +1378,9 @@
       ],
       "variadic": false,
       "category": "math",
-      "receives": "number",
-      "returns": "number",
-      "doc": "Transpose a MIDI note by semitones: `60.semi(7)` is 67."
+      "receives": "pattern",
+      "returns": "any",
+      "doc": "Transpose a MIDI note by semitones: `60.semi(7)` is 67. A list is transposed note by note, keeping each one's `;` length and leaving rests alone — `[c4;q, ef, g].semi(7)`. Nested lists move with it, so a subdivision group transposes as a group."
     },
     {
       "name": "scale",
@@ -1393,9 +1393,9 @@
       ],
       "variadic": false,
       "category": "math",
-      "receives": "number",
-      "returns": "number",
-      "doc": "Snap a MIDI note to the nearest tone of a scale, given as semitone offsets within an octave: `61.scale([0, 2, 4, 5, 7, 9, 11])` is 60."
+      "receives": "pattern",
+      "returns": "any",
+      "doc": "Snap a MIDI note to the nearest tone of a scale, given as semitone offsets within an octave: `61.scale([0, 2, 4, 5, 7, 9, 11])` is 60. A list is snapped note by note, keeping each one's `;` length and leaving rests alone, so a whole riff can be bent into a scale at once."
     },
     {
       "name": "clamp",
