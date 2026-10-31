@@ -3503,6 +3503,106 @@ fn a_loop_repeats_the_rest_a_section_quantized_to() {
     assert_eq!(starts, vec![0.0, 2.0, 4.0, 6.0], "two-bar slots throughout");
 }
 
+// ---- waiting ----
+
+/// The point of a wait: the next section opens later and nothing is written
+/// into the space.
+#[test]
+fn wait_holds_a_chain_open_for_a_number_of_bars() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).wait(2).then(one)\n"));
+    assert_eq!(bs.len(), 2);
+    assert_eq!(bs[1].start, 6.0);
+}
+
+/// A wait moves where the *next* section starts without shortening what is
+/// already playing — `quantize`'s rule, since it is `quantize`'s mechanism.
+#[test]
+fn wait_does_not_cut_what_is_playing() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).wait(2).then(one)\n"));
+    assert_eq!(bs[0].bars, Some(4.0), "the notes are unchanged");
+}
+
+/// Seconds read against the tempo the program is lowered at. The default is
+/// 120 bpm in 4/4, where a bar is two seconds — so three seconds is a bar and
+/// a half, and lands the next section off the downbeat on purpose.
+#[test]
+fn waits_counts_seconds_at_the_tempo_it_was_lowered_at() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).waits(3).then(one)\n"));
+    assert_eq!(bs[1].start, 5.5);
+}
+
+/// A written note value is a fraction of a bar, and which fraction follows the
+/// signature — the same conversion a metrical pattern makes.
+#[test]
+fn waitd_waits_a_written_note_value() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).waitd(h).then(one)\n"));
+    assert_eq!(bs[1].start, 4.5, "a half note is half a 4/4 bar");
+
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).waitd(q.dot).then(one)\n"));
+    assert_eq!(bs[1].start, 4.375, "a dotted quarter is three eighths of one");
+}
+
+/// How much of a bar a note value is moves with the signature, which is what
+/// makes `waitd` a musical length rather than a second spelling of `wait`.
+#[test]
+fn waitd_follows_the_time_signature() {
+    let src = format!("{ARR}playn([c3], bass, 4).waitd(h).then(one)\n");
+    let items = parse(src).expect("parse failed");
+    let bs = crate::lowerer::lower::lower_in_meter(
+        &items, crate::scheduler::clock::Meter { top: 3, bottom: 4 })
+        .expect("lower failed")
+        .bindings;
+    assert_eq!(bs[1].start, 4.0 + 2.0 / 3.0, "two beats of a three-beat bar");
+}
+
+/// A wait is a link in the chain, so a loop around it repeats the gap along
+/// with the notes — which is the whole reason it is a combinator and not a
+/// second way of spelling `.then_after`.
+#[test]
+fn a_loop_repeats_a_wait_along_with_the_notes() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 2).wait(2).loop(3)\n"));
+    let starts: Vec<f64> = bs.iter().map(|b| b.start).collect();
+    assert_eq!(starts, vec![0.0, 4.0, 8.0], "two bars on, two bars off");
+}
+
+/// And the receiver's bindings are carried through untouched, so a fill still
+/// knows whose fill it is — it just arrives after the gap.
+#[test]
+fn a_fill_after_a_wait_still_inherits_the_instrument() {
+    let bs = bindings_of(&format!(
+        "{ARR}playn([c3], bass, 4).wait(1).then_fill([1, 1, 1, 1])\n"));
+    assert_eq!(bs.len(), 2);
+    assert_eq!(bs[1].start, 5.0);
+    assert_eq!(bs[1].target, bs[0].target, "the same instrument");
+}
+
+/// Nothing may follow a section that never finishes, and a wait is something
+/// following it.
+#[test]
+fn waiting_after_an_endless_section_is_refused() {
+    let err = play_err(&format!("{ARR}play([c3], bass).wait(2)\n"));
+    assert!(err.contains("never finishes"), "got: {err}");
+}
+
+/// A negative wait would pull the next section back over the one before it,
+/// which is `.overlap` and says so.
+#[test]
+fn a_negative_wait_is_refused_and_points_at_overlap() {
+    let err = play_err(&format!("{ARR}playn([c3], bass, 4).wait(-1).then(one)\n"));
+    assert!(err.contains("overlap"), "got: {err}");
+    let err = play_err(&format!("{ARR}playn([c3], bass, 4).waits(-1).then(one)\n"));
+    assert!(err.contains("overlap"), "got: {err}");
+}
+
+/// `waitd(2)` has two readings and the language has a name for each, so the
+/// number is refused rather than guessed at.
+#[test]
+fn waitd_refuses_a_plain_number_and_names_the_other_two() {
+    let err = play_err(&format!("{ARR}playn([c3], bass, 4).waitd(2)\n"));
+    assert!(err.contains("wait(2)"), "got: {err}");
+    assert!(err.contains("waits(2)"), "got: {err}");
+}
+
 /// `take` says how long a section is, which is a length and not only a cut:
 /// asking for more than the notes fill leaves a rest at the end, and that rest
 /// survives being named too.

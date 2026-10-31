@@ -1,0 +1,29 @@
+---
+name: wait
+params: [play, bars]
+arities: [2]
+variadic: false
+receives: play
+returns: play
+---
+
+Hold a chain open for `bars` of silence before anything follows:
+`playn(verse, lead, 4).wait(2).then(chorus)` leaves the chorus two bars after
+the verse ends.
+
+What is already playing is untouched — only the next section moves, the same
+way [quantize](#quantize) rounds the join without shortening the notes.
+
+[then_after](#then_after) says the same thing about one join, and needs a
+section in hand to say it. A wait is a link in the chain instead, so it reads
+in the order it happens and composes with everything else that chains —
+`.loop` repeats the gap along with the notes:
+
+```swync
+playn(groove, kit, 2).wait(2).loop(3)
+```
+
+is two bars on and two bars off, three times through.
+
+The gap cannot be negative. To start the next section *early*, reach for
+[overlap](#overlap).

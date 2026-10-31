@@ -1,0 +1,22 @@
+---
+name: waits
+params: [play, seconds]
+arities: [2]
+variadic: false
+receives: play
+returns: play
+---
+
+[wait](#wait), in seconds instead of bars: `playn(verse, lead, 4).waits(1.5)`.
+
+The seconds are converted to bars at the tempo the program was played at, so
+changing the tempo afterwards stretches the gap along with the music. That is
+the right answer for something sitting in an arrangement — a gap that stayed
+1.5 seconds while the bars around it got longer would walk the piece off the
+grid — and it is why `waits` is a convenience for writing a length down rather
+than a promise about wall time.
+
+How long a bar is follows the time signature as well as the tempo, so at 120
+bpm two seconds is one bar in 4/4 and three quarters of one in 3/4.
+
+The gap cannot be negative.

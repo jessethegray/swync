@@ -1,0 +1,20 @@
+---
+name: waitd
+params: [play, value]
+arities: [2]
+variadic: false
+receives: play
+returns: play
+---
+
+[wait](#wait), in a written note value instead of bars:
+`playn(verse, lead, 4).waitd(h)` waits half a bar in 4/4.
+
+It takes the values a pattern is written in — `w`, `h`, `q`, `e`, `s`, dotted
+with `q.dot`, added together with `h + e` — and how much of a bar one comes to
+follows the time signature. A half note is half a 4/4 bar and two thirds of a
+3/4 one.
+
+A plain number is refused rather than guessed at: `waitd(2)` has two readings
+and the language has a name for each. Write [wait](#wait) for bars or
+[waits](#waits) for seconds.

@@ -40,6 +40,21 @@ pub struct Lowerer {
     /// can say what fraction of one it is, and `bpm` answers in bars per
     /// second. Everything else here already counts bars and never asks.
     pub meter: Meter,
+    /// How long a quarter note lasts, in seconds, at the tempo this program is
+    /// being lowered against — the same figure `qvs` is bound to.
+    ///
+    /// Held as a field as well as bound as a name because `waits` is the one
+    /// thing that has to read it rather than let the program read it: a name
+    /// in the environment is the program's to shadow, and a `let qvs = 3`
+    /// would then quietly redefine what a second is.
+    ///
+    /// Like the graph's own `qvs`, it is the tempo *at this eval*. A wait in
+    /// seconds is converted to bars here and is bars thereafter, so dragging
+    /// the transport afterwards stretches it with the music — which is the
+    /// right answer for something sitting in an arrangement, and the reason
+    /// `waits` is a convenience for writing a gap rather than a promise about
+    /// wall time.
+    pub beat_secs: f64,
     /// The octave in force while a written sequence is being lowered: set by
     /// every step that spells one, read by every note that does not, so
     /// `[a1;q, a, a, a]` is four `a1`s.
@@ -190,6 +205,7 @@ fn lower_inner(
         samples,
         choices: Vec::new(),
         meter,
+        beat_secs,
         octave: None,
         warnings: Vec::new(),
         clocks: Vec::new(),

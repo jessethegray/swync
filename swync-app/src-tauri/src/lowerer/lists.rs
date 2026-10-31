@@ -425,6 +425,8 @@ mod tests {
             samples: Default::default(),
             choices: Vec::new(),
             meter: Default::default(),
+            // Nothing here measures a wait in seconds.
+            beat_secs: crate::lowerer::lower::DEFAULT_BEAT_SECS,
             octave: None,
             warnings: Vec::new(),
             clocks: Vec::new(),

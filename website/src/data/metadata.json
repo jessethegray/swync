@@ -1987,6 +1987,51 @@
       "doc": "Round where a chain of plays has reached up to a multiple of `grid` bars, without touching what is already playing: `playn(pat, inst, 3, 2).quantize().then(chorus)`. `grid` defaults to 1. Useful when a section's length is not a whole number of bars."
     },
     {
+      "name": "wait",
+      "params": [
+        "play",
+        "bars"
+      ],
+      "arities": [
+        2
+      ],
+      "variadic": false,
+      "category": "special",
+      "receives": "play",
+      "returns": "play",
+      "doc": "Hold a chain open for `bars` of silence before anything follows: `playn(verse, lead, 4).wait(2).then(chorus)`. What is already playing is untouched — only the next section moves, the same way `quantize` rounds the join without shortening the notes. `.then_after(2, chorus)` says the same thing about one join; `wait` is a link in the chain, so `.loop` repeats the gap with the notes. Cannot be negative."
+    },
+    {
+      "name": "waits",
+      "params": [
+        "play",
+        "seconds"
+      ],
+      "arities": [
+        2
+      ],
+      "variadic": false,
+      "category": "special",
+      "receives": "play",
+      "returns": "play",
+      "doc": "`wait`, in seconds instead of bars: `playn(verse, lead, 4).waits(1.5)`. The seconds are converted to bars at the tempo the program was played at, so changing the tempo afterwards stretches the gap along with the music. Cannot be negative."
+    },
+    {
+      "name": "waitd",
+      "params": [
+        "play",
+        "value"
+      ],
+      "arities": [
+        2
+      ],
+      "variadic": false,
+      "category": "special",
+      "receives": "play",
+      "returns": "play",
+      "doc": "`wait`, in a written note value instead of bars: `playn(verse, lead, 4).waitd(h)` waits half a bar in 4/4. Takes the values a pattern is written in — `w`, `h`, `q`, `e`, `s`, dotted with `q.dot`, added with `h + e` — and how much of a bar one is follows the time signature. A plain number is refused: write `wait` for bars or `waits` for seconds."
+    },
+    {
       "name": "take",
       "params": [
         "play",
