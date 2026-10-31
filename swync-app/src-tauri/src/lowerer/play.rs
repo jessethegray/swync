@@ -294,7 +294,11 @@ impl Lowerer {
             return self.play_live(name, *source, target, lanes, repeats, rate);
         }
 
-        let (mut pattern, pass_bars) = to_pattern_timed(&pattern_value, self.meter)?;
+        let (mut pattern, pass_bars) = to_pattern_timed(
+            &pattern_value,
+            self.meter,
+            if repeats.is_some() { Passes::Counted } else { Passes::Endless },
+        )?;
         if !rate.is_unit() {
             // Only the pattern. A lane is read by position — the nth note takes
             // the nth value — so it advances with the notes whatever speed they
@@ -598,6 +602,46 @@ fn tuplet(v: &Value, register: Option<Beats>, meter: Meter) -> Result<(Pattern, 
     Ok((parts_to_steps(parts), unit.times(span)))
 }
 
+/// Whether what reads this pattern counts its passes or lets it run.
+///
+/// It decides exactly one thing, and only for a `stack` whose layers are not
+/// all the same length: what a layer does once its own pass is over. There is
+/// no answer that is right both times, which is why this has to be asked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Passes {
+    /// `play` — the pattern loops, so every layer loops at its own period and
+    /// a short one comes around against a long one. That phasing is what
+    /// layers of unequal length are *for*, and is what `stack` has always done.
+    Endless,
+    /// `play_once`, `playn`, `then_fill` — the binding stops after a count of
+    /// passes, and the count has to mean the same thing to every layer. A
+    /// stack's pass is as long as its longest layer, so left to loop a shorter
+    /// one sounds several times inside a pass that promised one: a chord of an
+    /// eighth over a whole note struck its eighth four times under the long
+    /// note, which is a cacophony rather than a chord. So a layer is given the
+    /// whole of the stack's pass and rests for what it does not fill.
+    Counted,
+}
+
+/// A layer stretched to rest out the remainder of the stack's pass.
+///
+/// `layer` runs one pass in `pass` bars and then comes around again, which is
+/// what has to stop. `fast(pass, ..)` is that same pass over exactly one bar,
+/// so it is a group — a group is given one bar of slot-local time and no more,
+/// which is where the looping goes — and the slots either side of it hold the
+/// group to `pass` of the `whole` bars and rest the rest. Slowing the pair by
+/// `whole` puts it all back in bar time.
+fn resting_out(layer: Pattern, pass: f64, whole: f64) -> Pattern {
+    if !(whole > pass) || !whole.is_finite() || !(pass > 0.0) {
+        return layer;
+    }
+    let one_pass = Step::Group(Box::new(Pattern::fast(pass, layer)));
+    Pattern::fast(1.0 / whole, Pattern::Steps(vec![
+        Slot::sized(one_pass, pass),
+        Slot::sized(Step::Rest, whole - pass),
+    ]))
+}
+
 /// Interpret a lowered value rhythmically, and say how long one pass of it
 /// takes in bars.
 ///
@@ -606,7 +650,9 @@ fn tuplet(v: &Value, register: Option<Beats>, meter: Meter) -> Result<(Pattern, 
 /// as long as its values add up to, and `playn`, `then` and `then_fill` all
 /// count passes while binding in bars — so they need the conversion rather
 /// than being able to assume it is one.
-pub fn to_pattern_timed(v: &Value, meter: Meter) -> Result<(Pattern, f64), String> {
+pub fn to_pattern_timed(v: &Value, meter: Meter, passes: Passes)
+    -> Result<(Pattern, f64), String>
+{
     match v {
         Value::List(items) => match paradigm(items)? {
             // A `;` length here is time: the slot takes that share of the
@@ -649,15 +695,27 @@ pub fn to_pattern_timed(v: &Value, meter: Meter) -> Result<(Pattern, f64), Strin
         // reconcile their lengths — that they need not agree is the point, and
         // it is how a metrical layer polymeters against a proportional one. A
         // pass of the whole is over when the longest of them is.
+        //
+        // Which leaves what a shorter layer does for the rest of that pass,
+        // and the two answers are both right — see [`Passes`], which is the
+        // whole reason this function is asked.
         Value::Stack(layers) => {
+            let mut timed = Vec::with_capacity(layers.len());
             let mut pass = 0.0f64;
-            let mut out = Vec::with_capacity(layers.len());
             for layer in layers.iter() {
-                let (p, bars) = to_pattern_timed(layer, meter)?;
+                let (p, bars) = to_pattern_timed(layer, meter, passes)?;
                 pass = pass.max(bars);
-                out.push(p);
+                timed.push((p, bars));
             }
-            Ok((Pattern::Stack(out), if pass > 0.0 { pass } else { 1.0 }))
+            let whole = if pass > 0.0 { pass } else { 1.0 };
+            let out = timed
+                .into_iter()
+                .map(|(p, bars)| match passes {
+                    Passes::Endless => p,
+                    Passes::Counted => resting_out(p, bars, whole),
+                })
+                .collect();
+            Ok((Pattern::Stack(out), whole))
         }
         Value::Number(n) => Ok((Pattern::seq([Step::Value(*n)]), 1.0)),
         // A slider is the number it stands at, like everything else a pattern
@@ -724,7 +782,7 @@ pub fn to_pattern_timed(v: &Value, meter: Meter) -> Result<(Pattern, f64), Strin
 /// Interpret a lowered value rhythmically, where how long a pass takes does not
 /// matter — a lane, a fill's shape, or a check that something is a pattern at all.
 pub fn to_pattern(v: &Value, meter: Meter) -> Result<Pattern, String> {
-    to_pattern_timed(v, meter).map(|(pattern, _)| pattern)
+    to_pattern_timed(v, meter, Passes::Endless).map(|(pattern, _)| pattern)
 }
 
 /// A lane's values, if this one carries quoted lists rather than numbers.
@@ -886,7 +944,7 @@ fn to_step(v: &Value, meter: Meter) -> Result<Step, String> {
         // exactly one bar of slot-local time and a half-bar pass would sound
         // its contents twice inside its own slot.
         Value::List(_) | Value::Stack(_) => {
-            let (inner, pass) = to_pattern_timed(v, meter)?;
+            let (inner, pass) = to_pattern_timed(v, meter, Passes::Endless)?;
             if pass != 1.0 {
                 return Err(
                     "a group written in note values cannot sit inside a sequence of \
