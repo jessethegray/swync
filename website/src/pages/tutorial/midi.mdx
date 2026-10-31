@@ -51,6 +51,17 @@ play([c2;q, c2, g2, c2], midiout("deluge"), vel: [1, .5, .8, .5])
 play([c2;q, c2, g2, c2], midiout("deluge"), legato: .25)   // staccato
 ```
 
+A note is always released a few milliseconds before the next one begins, even
+at the default `legato` of 1. That gap is what makes a line of notes a line:
+gear reads a note-off and a note-on arriving in the same instant as a gate
+that never closed, and a great deal of it will not re-attack — a mono synth
+slides to the new pitch without retriggering, and a repeated pitch does not
+move at all. Write `legato` above 1 when you want that glide on purpose.
+
+```swync
+play([c2;q, e2, g2, e2], midiout("deluge"), legato: 1.2)   // held into the next note
+```
+
 And `chan` overrides the channel per note.
 
 ```swync

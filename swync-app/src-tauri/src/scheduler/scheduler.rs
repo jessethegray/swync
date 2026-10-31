@@ -703,7 +703,9 @@ fn schedule_pass(
         // so no instrument to fail to build it and no tail to hold the note
         // open past its end — how long the note lasts is the whole of what the
         // gear at the other end is told, and `legato` has already scaled that
-        // in `query`.
+        // in `query`. The one thing `Note::from_event` does to it is take the
+        // gap a wire needs off the end; see `midi::out::RELEASE_SECS`, which a
+        // voice has no use for and gear cannot do without.
         let destination = match &bound.target {
             Target::Midi(destination) => destination,
             Target::Instrument(_) => {
