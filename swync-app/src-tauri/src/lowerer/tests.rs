@@ -2101,6 +2101,10 @@ fn a_section_written_out_matches_the_same_section_named() {
          format!("{base}.then(play([c4, e4], lead))")),
         (format!("{base}.then_after(2, tail)"),
          format!("{base}.then_after(2, play_once([c2], bass))")),
+        (format!("{base}.then_afters(2, tail)"),
+         format!("{base}.then_afters(2, play_once([c2], bass))")),
+        (format!("{base}.then_afterd(h, tail)"),
+         format!("{base}.then_afterd(h, play_once([c2], bass))")),
         (format!("{base}.overlap(1, tail)"),
          format!("{base}.overlap(1, play_once([c2], bass))")),
         (format!("{base}.with(tail)"),
@@ -2235,6 +2239,8 @@ fn no_combinator_places_a_play_bound_to_a_name() {
     for src in [
         "playn([c3], bass, 2).then(named)",
         "playn([c3], bass, 2).then_after(1, named)",
+        "playn([c3], bass, 2).then_afters(1, named)",
+        "playn([c3], bass, 2).then_afterd(h, named)",
         "playn([c3], bass, 2).overlap(1, named)",
         "playn([c3], bass, 2).with(named)",
         "playn([c3], bass, 2).then_n(named, 2)",
@@ -3234,6 +3240,63 @@ fn then_after_leaves_a_gap() {
     assert_eq!(bs.len(), 2);
     assert_eq!(bs[0].bars, Some(4.0));
     assert_eq!(bs[1].start, 6.0);
+}
+
+/// Seconds, against the tempo the program was lowered at: a bar is two
+/// seconds there, so three seconds is a bar and a half of silence.
+#[test]
+fn then_afters_leaves_a_gap_in_seconds() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).then_afters(3, one)\n"));
+    assert_eq!(bs.len(), 2, "the gap is silence, not a rest written out");
+    assert_eq!(bs[0].bars, Some(4.0), "what was already playing is untouched");
+    assert_eq!(bs[1].start, 5.5);
+}
+
+/// A written note value, spelled the way a pattern spells one — and dotted the
+/// same way too.
+#[test]
+fn then_afterd_leaves_a_gap_of_a_written_note_value() {
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).then_afterd(h, one)\n"));
+    assert_eq!(bs[1].start, 4.5, "a half note is half a bar in 4/4");
+    let bs = bindings_of(&format!("{ARR}playn([c3], bass, 4).then_afterd(q.dot, one)\n"));
+    assert_eq!(bs[1].start, 4.375, "a dotted quarter is three eighths of a bar");
+}
+
+/// Which is what makes it a written value rather than a fraction of a bar:
+/// a half note is two beats wherever it is written, so how much of a bar it
+/// comes to is the time signature's business.
+#[test]
+fn then_afterd_follows_the_time_signature() {
+    let src = format!("{ARR}playn([c3], bass, 4).then_afterd(h, one)\n");
+    let items = parse(src).expect("parse failed");
+    let bs = crate::lowerer::lower::lower_in_meter(
+        &items, crate::scheduler::clock::Meter { top: 3, bottom: 4 })
+        .expect("lower failed")
+        .bindings;
+    assert_eq!(bs[1].start, 4.0 + 2.0 / 3.0, "two beats of a three-beat bar");
+}
+
+/// A gap of less than nothing is `.overlap` spelled backwards, and every
+/// spelling says so rather than quietly starting the next section early.
+#[test]
+fn a_negative_gap_is_refused_in_every_unit() {
+    for src in [
+        "playn([c3], bass, 4).then_after(-1, one)",
+        "playn([c3], bass, 4).then_afters(-1, one)",
+    ] {
+        let err = play_err(&format!("{ARR}{src}\n"));
+        assert!(err.contains("overlap"), "got: {err}");
+    }
+}
+
+/// `then_afterd(2, …)` has the same two readings `waitd(2)` has, and the
+/// refusal names this family's other two spellings rather than the `wait`
+/// family's.
+#[test]
+fn then_afterd_refuses_a_plain_number_and_names_the_other_two() {
+    let err = play_err(&format!("{ARR}playn([c3], bass, 4).then_afterd(2, one)\n"));
+    assert!(err.contains("then_after(2, next)"), "got: {err}");
+    assert!(err.contains("then_afters(2, next)"), "got: {err}");
 }
 
 /// The two sections really do sound together over the join.

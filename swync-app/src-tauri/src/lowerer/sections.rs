@@ -51,6 +51,8 @@ use crate::swync_graph::environment::{FunctionDef, Value};
 
 pub const THEN: &str = "then";
 pub const THEN_AFTER: &str = "then_after";
+pub const THEN_AFTERS: &str = "then_afters";
+pub const THEN_AFTERD: &str = "then_afterd";
 pub const THEN_N: &str = "then_n";
 pub const LOOP: &str = "loop";
 pub const THEN_EACH: &str = "then_each";
@@ -72,10 +74,100 @@ pub const MAYBE: &str = "maybe";
 
 /// Every name this module handles, in one place so `lang` and `call` agree.
 pub const SECTION_BUILTINS: &[&str] = &[
-    THEN, THEN_AFTER, THEN_N, LOOP, THEN_EACH, THEN_FILL, OVERLAP, WITH, AT,
-    SEQ, QUANTIZE, WAIT, WAITS, WAITD, TAKE, STOP, WTHEN, RTHEN, SHUFFLE_THEN,
-    MAYBE,
+    THEN, THEN_AFTER, THEN_AFTERS, THEN_AFTERD, THEN_N, LOOP, THEN_EACH,
+    THEN_FILL, OVERLAP, WITH, AT, SEQ, QUANTIZE, WAIT, WAITS, WAITD, TAKE,
+    STOP, WTHEN, RTHEN, SHUFFLE_THEN, MAYBE,
 ];
+
+/// One length-taking combinator's three spellings: a number of bars, a number
+/// of seconds, and a written note value.
+///
+/// The unit is the only thing that differs between the three, so each family is
+/// described once here rather than at each spelling. Two kinds of message have
+/// to point sideways — the one that shows what a call looks like, and the one
+/// that tells somebody holding a number which of the other two names they
+/// wanted — and both read the names off this. That is what stops
+/// `then_afterd`'s advice naming `wait`.
+struct Family {
+    bars: &'static str,
+    seconds: &'static str,
+    written: &'static str,
+    /// What the length is called in this family's messages. A `wait` is the
+    /// whole of what was written; a `then_after`'s length is the gap in front
+    /// of the section it also takes.
+    what: &'static str,
+    /// What follows the length in a call of this family, so that an example of
+    /// one is a whole call: nothing for a `wait`, the section for a
+    /// `then_after`.
+    tail: &'static str,
+}
+
+const WAIT_FAMILY: Family = Family {
+    bars: WAIT,
+    seconds: WAITS,
+    written: WAITD,
+    what: "the length",
+    tail: "",
+};
+
+const THEN_AFTER_FAMILY: Family = Family {
+    bars: THEN_AFTER,
+    seconds: THEN_AFTERS,
+    written: THEN_AFTERD,
+    what: "the gap",
+    tail: ", next",
+};
+
+/// Which unit one of a family's three spellings writes its length in.
+enum Unit {
+    Bars,
+    Seconds,
+    Written,
+}
+
+impl Family {
+    /// Which of the three spellings `who` is.
+    ///
+    /// An unrecognised name is bars rather than an error, because the plain
+    /// spelling is the family's own name and everything that asks has already
+    /// been dispatched on it.
+    fn unit(&self, who: &str) -> Unit {
+        match who {
+            _ if who == self.seconds => Unit::Seconds,
+            _ if who == self.written => Unit::Written,
+            _ => Unit::Bars,
+        }
+    }
+
+    /// A call of `name` with `length` where its length goes — what a message
+    /// means when it says to write it the other way.
+    fn call(&self, name: &str, length: &str) -> String {
+        format!("{name}({length}{})", self.tail)
+    }
+
+    /// A whole call of `who`, for the message that has to show one.
+    fn example(&self, who: &str) -> String {
+        let length = match self.unit(who) {
+            Unit::Bars => "2",
+            Unit::Seconds => "1.5",
+            Unit::Written => "h",
+        };
+        format!("playn(pat, inst, 4).{}", self.call(who, length))
+    }
+
+    /// What `who` expects, in the words its arity message needs.
+    fn expects(&self, who: &str) -> String {
+        let length = match self.unit(who) {
+            Unit::Bars => format!("{} in bars", self.what),
+            Unit::Seconds => format!("{} in seconds", self.what),
+            Unit::Written => format!("{} as a written note value", self.what),
+        };
+        match self.tail.is_empty() {
+            true => length,
+            false => format!("{length} and a section"),
+        }
+    }
+}
 
 /// What a handle covers: where it sits, and which bindings are its own.
 struct Section {
@@ -170,7 +262,7 @@ impl Lowerer {
         let p = Params { piped, args };
         match name {
             THEN => self.then(&p),
-            THEN_AFTER => self.then_after(&p),
+            THEN_AFTER | THEN_AFTERS | THEN_AFTERD => self.then_after(name, &p),
             THEN_N => self.then_n(&p),
             OVERLAP => self.overlap(&p),
             WITH => self.with(&p),
@@ -549,21 +641,25 @@ impl Lowerer {
         Ok(self.place(THEN, "the section", p, 1, at)?.after(&s).value())
     }
 
-    /// `.then_after(n, f)` — `n` bars of silence, then `f`.
-    fn then_after(&mut self, p: &Params) -> Result<Value, String> {
-        let s = self.receiver_param(THEN_AFTER, p, 0)?;
+    /// `.then_after(n, f)`, `.then_afters(n, f)`, `.then_afterd(v, f)` — a
+    /// stretch of silence, then `f`.
+    ///
+    /// The three differ only in what unit the gap arrives in, and they get that
+    /// from `length_in_bars` rather than converting it here, so a second of
+    /// silence is the same length of silence whether it was written as a gap in
+    /// front of a section or as a `wait` standing on its own.
+    fn then_after(&mut self, who: &str, p: &Params) -> Result<Value, String> {
+        let s = self.receiver_param(who, p, 0)?;
         if p.count() != 3 {
             return Err(format!(
-                "{THEN_AFTER} expects a gap and a section: \
-                 playn(pat, inst, 4).{THEN_AFTER}(2, next)"));
+                "{who} expects {}: `{}`",
+                THEN_AFTER_FAMILY.expects(who),
+                THEN_AFTER_FAMILY.example(who)));
         }
-        let gap = self.constant_param(THEN_AFTER, "the gap", p, 1)?;
-        if gap < 0.0 {
-            return Err(format!(
-                "{THEN_AFTER}: a gap cannot be negative — use `.{OVERLAP}` to start early"));
-        }
-        let at = self.cursor(THEN_AFTER, &s)? + gap;
-        Ok(self.place(THEN_AFTER, "the section", p, 2, at)?.after(&s).value())
+        let written = self.param(p, 1)?;
+        let gap = self.length_in_bars(who, &THEN_AFTER_FAMILY, written.as_ref())?;
+        let at = self.cursor(who, &s)? + gap;
+        Ok(self.place(who, "the section", p, 2, at)?.after(&s).value())
     }
 
     /// `.overlap(n, f)` — start `f` `n` bars *before* this section ends.
@@ -959,20 +1055,30 @@ impl Lowerer {
     fn wait(&mut self, who: &str, args: &[Value]) -> Result<Value, String> {
         let s = self.receiver(who, args)?;
         if args.len() != 2 {
-            let (what, example) = Self::wait_shape(who);
-            return Err(format!("{who} expects {what}: `{example}`"));
+            return Err(format!(
+                "{who} expects {}: `{}`",
+                WAIT_FAMILY.expects(who),
+                WAIT_FAMILY.example(who)));
         }
-        let bars = self.wait_bars(who, args.get(1))?;
+        let bars = self.length_in_bars(who, &WAIT_FAMILY, args.get(1))?;
         let end = self.cursor(who, &s)?;
         Ok(Section { ends_at: Some(end + bars), ..s }.value())
     }
 
-    /// The length a wait was written as, in bars.
-    fn wait_bars(&mut self, who: &str, v: Option<&Value>) -> Result<f64, String> {
-        match who {
-            WAIT => {
-                let n = self.constant(who, "the length", v)?;
-                Self::not_negative(who, n)?;
+    /// A length written in one of a family's three units, in bars.
+    ///
+    /// The unit is the only thing that differs between the spellings, so this
+    /// is one function and not one per family: `wait`/`waits`/`waitd` and
+    /// `then_after`/`then_afters`/`then_afterd` ask the same question in two
+    /// places, and a second of silence that came to a different number of bars
+    /// depending on which combinator asked would be a bug nobody could see.
+    fn length_in_bars(&mut self, who: &str, f: &Family, v: Option<&Value>)
+        -> Result<f64, String>
+    {
+        match f.unit(who) {
+            Unit::Bars => {
+                let n = self.constant(who, f.what, v)?;
+                Self::not_negative(who, f, n)?;
                 Ok(n)
             }
             // Seconds against the tempo this eval was lowered at — see
@@ -981,14 +1087,15 @@ impl Lowerer {
             // same two seconds is one bar in 4/4 and three quarters of one in
             // 3/4, which is what makes this a *musical* length rather than a
             // wall-clock one.
-            WAITS => {
-                let secs = self.constant(who, "the length in seconds", v)?;
-                Self::not_negative(who, secs)?;
+            Unit::Seconds => {
+                let secs = self.constant(who, &format!("{} in seconds", f.what), v)?;
+                Self::not_negative(who, f, secs)?;
                 let bar_secs = self.beat_secs * self.meter.quarters_per_bar();
                 if !(bar_secs > 0.0) || !bar_secs.is_finite() {
                     return Err(format!(
-                        "{WAITS}: there is no tempo here to measure seconds against — \
-                         write the gap in bars with `.{WAIT}(n)` instead"));
+                        "{who}: there is no tempo here to measure seconds against — write \
+                         it in bars with `.{}` instead",
+                        f.call(f.bars, "n")));
                 }
                 Ok(secs / bar_secs)
             }
@@ -997,40 +1104,31 @@ impl Lowerer {
             // read as two of something and the language has two candidates.
             // A number is pointed at the other two names rather than guessed
             // at.
-            WAITD => match v {
+            Unit::Written => match v {
                 Some(Value::Duration(b)) => Ok(b.to_f64() / self.meter.quarters_per_bar()),
                 Some(Value::Number(n)) => Err(format!(
-                    "{WAITD}: the length must be a written note value such as `q`, `h` or \
-                     `q.dot` — {n} is a number, so write `.{WAIT}({n})` for bars or \
-                     `.{WAITS}({n})` for seconds"
-                )),
+                    "{who}: {} must be a written note value such as `q`, `h` or `q.dot` — \
+                     {n} is a number, so write `.{}` for bars or `.{}` for seconds",
+                    f.what,
+                    f.call(f.bars, &n.to_string()),
+                    f.call(f.seconds, &n.to_string()))),
                 _ => Err(format!(
-                    "{WAITD}: the length must be a written note value such as `q`, `h` or \
-                     `q.dot`")),
+                    "{who}: {} must be a written note value such as `q`, `h` or `q.dot`",
+                    f.what)),
             },
-            _ => Err(format!("{who} is not a wait")),
         }
     }
 
-    /// A wait of nothing is harmless and a wait of less than nothing is not:
-    /// it would pull the next section back over the one before it, which is
+    /// A gap of nothing is harmless and a gap of less than nothing is not: it
+    /// would pull the next section back over the one before it, which is
     /// `.overlap`'s job and says so.
-    fn not_negative(who: &str, n: f64) -> Result<(), String> {
+    fn not_negative(who: &str, f: &Family, n: f64) -> Result<(), String> {
         match n < 0.0 {
             true => Err(format!(
-                "{who}: a wait cannot be negative, got {n} — use `.{OVERLAP}` to start the \
-                 next section early")),
+                "{who}: {} cannot be negative, got {n} — use `.{OVERLAP}` to start the \
+                 next section early",
+                f.what)),
             false => Ok(()),
-        }
-    }
-
-    /// What a wait takes, and how one reads — the pair the arity message has to
-    /// name together, so they are answered together and cannot drift.
-    fn wait_shape(who: &str) -> (&'static str, &'static str) {
-        match who {
-            WAITS => ("a length in seconds", "playn(pat, inst, 4).waits(1.5)"),
-            WAITD => ("a written note value", "playn(pat, inst, 4).waitd(h)"),
-            _ => ("a length in bars", "playn(pat, inst, 4).wait(2)"),
         }
     }
 
