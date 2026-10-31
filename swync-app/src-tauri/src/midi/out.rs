@@ -168,6 +168,44 @@ pub const DEFAULT_VELOCITY: u8 = 100;
 /// The highest note and velocity the wire can carry. Seven bits each.
 pub const MAX_DATA: f64 = 127.0;
 
+/// How far before the end of its step a note is released.
+///
+/// A step's *whole* length is what a voice gets, and that is right there: an
+/// instrument's envelope releases from the note's end, the next note is a
+/// separate voice, and the two are free to overlap while one rings out. On a
+/// wire it is wrong, and the way it is wrong is this bug — a note-off landing
+/// in the same instant as the next note-on is a gate that never closes. Gear
+/// reads the two in the order they arrive and a great deal of it will not
+/// re-attack an envelope with no gap in front of it: a mono synth slides to
+/// the new pitch without retriggering, and a repeated pitch does not move at
+/// all. Either way an even line of notes comes out as one long note, which is
+/// exactly what gets reported. Every hardware sequencer leaves a gap here and
+/// this is the same gap.
+///
+/// Five milliseconds, and the units matter: it is a fact about gear rather
+/// than about the music, so it is a *time* and not a share of the step. A
+/// tenth of a whole note is a fifth of a second of silence on a pad, which
+/// anybody would hear as staccato and nobody asked for, while five
+/// milliseconds is longer than the three bytes of a note-off take to go down
+/// the wire and shorter than anything a player can hear.
+///
+/// It is taken off whatever `legato` already decided rather than instead of
+/// it, so a `legato` written to overlap the next note still overlaps it — five
+/// milliseconds less. That is what a piece should write when it wants a mono
+/// synth to glide, and it is honest about what it is asking for in a way that
+/// a zero-length gap never was.
+const RELEASE_SECS: f64 = 0.005;
+
+/// The most of a note the gap may take, for the notes short enough that it
+/// would otherwise take all of it.
+///
+/// At a sixteenth of a bar at 170 bpm a step is about 90 milliseconds and the
+/// gap is a small part of it; at the speeds a `fast` can reach the step is
+/// shorter than the gap, and a note shortened to nothing is a note that does
+/// not sound. Half is arbitrary beyond being clearly on the right side of
+/// both.
+const MAX_RELEASE_SHARE: f64 = 0.5;
+
 impl Note {
     /// Build the note a queried pattern event comes to.
     ///
@@ -183,6 +221,10 @@ impl Note {
     /// audible and points straight at itself, while the same error silently
     /// playing nothing is a part that has simply stopped working, with the
     /// program that caused it looking exactly like one that should sound.
+    ///
+    /// The note is released a little before the end it is handed — see
+    /// [`RELEASE_SECS`], which is the whole of what makes a line of notes a
+    /// line rather than one held note.
     pub fn from_event(
         destination: &Destination,
         value: f64,
@@ -212,9 +254,25 @@ impl Note {
                 .map(|v| ((v * MAX_DATA).round().clamp(1.0, MAX_DATA)) as u8)
                 .unwrap_or(DEFAULT_VELOCITY),
             on_secs,
-            off_secs,
+            off_secs: released(on_secs, off_secs),
         }
     }
+}
+
+/// When a note handed `on_secs`..`off_secs` is actually released.
+///
+/// A free function so the rule — which is the part with judgement in it — is
+/// testable on its own, and so that the clamp for a step shorter than the gap
+/// sits beside the gap rather than inside a struct literal.
+fn released(on_secs: f64, off_secs: f64) -> f64 {
+    let held = off_secs - on_secs;
+    // A note whose end precedes its start is already as short as a note can
+    // be, and `queue` has its own answer for it. Shortening it further would
+    // only move the off further into the past.
+    if !held.is_finite() || held <= 0.0 {
+        return off_secs;
+    }
+    off_secs - RELEASE_SECS.min(held * MAX_RELEASE_SHARE)
 }
 
 /// The MIDI clock's resolution: twenty-four ticks to the quarter note.
@@ -940,6 +998,55 @@ mod tests {
         player.clock(0.0, PPQN * 3.0);
         player.clock(1.0, PPQN * 3.0);
         assert_eq!(player.last_tick, Some(72), "three quarters to a 3/4 bar");
+    }
+
+    /// The bug this whole gap exists for: a note-off in the same instant as
+    /// the next note-on is a gate that never closes, and a line of even notes
+    /// reaches the gear as one held note.
+    #[test]
+    fn a_sent_note_is_released_before_the_next_one_begins() {
+        let a = Note::from_event(&to(1), 60.0, &[], 0.0, 0.5);
+        let b = Note::from_event(&to(1), 64.0, &[], 0.5, 1.0);
+        assert!(a.off_secs < b.on_secs, "{} should precede {}", a.off_secs, b.on_secs);
+    }
+
+    /// The gap is a fact about gear, so it is a time rather than a share of
+    /// the step — a tenth of a whole note would be a fifth of a second of
+    /// silence on a pad, which is staccato nobody wrote.
+    #[test]
+    fn the_gap_is_the_same_length_whatever_the_note_is() {
+        let short = Note::from_event(&to(1), 60.0, &[], 0.0, 0.25);
+        let long = Note::from_event(&to(1), 60.0, &[], 0.0, 4.0);
+        assert!((short.off_secs - (0.25 - RELEASE_SECS)).abs() < 1e-9, "got {short:?}");
+        assert!((long.off_secs - (4.0 - RELEASE_SECS)).abs() < 1e-9, "got {long:?}");
+    }
+
+    /// A step shorter than the gap would otherwise be shortened to nothing,
+    /// and a note of no length is a note that does not sound.
+    #[test]
+    fn a_step_shorter_than_the_gap_keeps_half_of_itself() {
+        let note = Note::from_event(&to(1), 60.0, &[], 1.0, 1.002);
+        assert!(note.off_secs > note.on_secs, "got {note:?}");
+        assert!((note.off_secs - 1.001).abs() < 1e-9, "got {note:?}");
+    }
+
+    /// `legato` writes how long the note is held and the gap comes off what it
+    /// decided, so a note written to overlap the next one still overlaps it —
+    /// which is what a piece asks for when it wants a mono synth to glide.
+    #[test]
+    fn a_note_written_to_overlap_the_next_one_still_overlaps_it() {
+        // `query` has already stretched the event, so what arrives here is the
+        // stretched end: a step of 0.5 held for one and a half of itself.
+        let overlapping = Note::from_event(&to(1), 60.0, &[], 0.0, 0.75);
+        assert!(overlapping.off_secs > 0.5, "got {overlapping:?}");
+    }
+
+    /// Nothing about the gap may turn a note into one the queue reads
+    /// backwards.
+    #[test]
+    fn a_note_whose_end_precedes_its_start_is_left_where_it_is() {
+        let backwards = Note::from_event(&to(1), 60.0, &[], 2.0, 1.0);
+        assert_eq!(backwards.off_secs, 1.0);
     }
 
     /// The anchor exists to predict audio time between the audio callback's
