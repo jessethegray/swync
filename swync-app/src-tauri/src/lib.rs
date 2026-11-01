@@ -41,6 +41,7 @@ pub mod lang;
 mod library;
 mod midi;
 mod project;
+mod recents;
 mod recorder;
 mod samples;
 mod settings;
@@ -1466,6 +1467,30 @@ fn set_recent_session(app: tauri::AppHandle, session: Session) -> Result<(), Str
     std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
+/// The projects worth offering a way back into: every one that has been
+/// opened, most recent first, less the folders that have since moved or gone.
+///
+/// Separate from `recent_session`, which answers what to *reopen* — one
+/// project and its tabs, restored without being asked for. This is a list to
+/// choose from, which is why it outlives the project that is open: the splash
+/// page shows it when there is nothing open at all.
+#[tauri::command]
+fn recent_projects(app: tauri::AppHandle) -> Result<Vec<recents::Recent>, String> {
+    Ok(recents::read(&config_file(&app, recents::FILE)?))
+}
+
+/// Put a project at the head of that list.
+///
+/// Called by the editor as a project becomes the open one, rather than from
+/// `open_project`: that command is also how the editor re-reads a project
+/// whose folder changed under it, and a history that counted every watcher
+/// refresh would be rewritten dozens of times a session for no visible
+/// difference.
+#[tauri::command]
+fn remember_project(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    recents::remember(&config_file(&app, recents::FILE)?, &root)
+}
+
 /// List one directory, for the project tree.
 ///
 /// One level deep on purpose: the tree asks again when a folder is opened, so
@@ -1551,6 +1576,7 @@ const MENU_OPEN: &str = "file-open";
 const MENU_SAVE: &str = "file-save";
 const MENU_NEW_PROJECT: &str = "project-new";
 const MENU_OPEN_PROJECT: &str = "project-open";
+const MENU_CLOSE_PROJECT: &str = "project-close";
 const MENU_INSTALL_LIBRARY: &str = "library-install";
 const MENU_EXPORT_LIBRARY: &str = "library-export";
 
@@ -1564,12 +1590,13 @@ const SCHEDULER_ERROR: &str = "scheduler-error";
 
 /// Every id the File menu can raise. The event handler forwards these and
 /// ignores anything else, so the platform's own items keep working.
-const FILE_ITEMS: [&str; 7] = [
+const FILE_ITEMS: [&str; 8] = [
     MENU_NEW,
     MENU_OPEN,
     MENU_SAVE,
     MENU_NEW_PROJECT,
     MENU_OPEN_PROJECT,
+    MENU_CLOSE_PROJECT,
     MENU_INSTALL_LIBRARY,
     MENU_EXPORT_LIBRARY,
 ];
@@ -1601,6 +1628,17 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?;
+    // No accelerator: the shifted W this would want is the platform's own
+    // Close Window, and closing a project is not something anybody reaches for
+    // mid-performance. It is here because the splash page is only reachable
+    // with nothing open — this is the way back to it.
+    let close_project_item = MenuItem::with_id(
+        app,
+        MENU_CLOSE_PROJECT,
+        "Close Project",
+        true,
+        None::<&str>,
+    )?;
     // Libraries are a rarer act still: installed once and then forgotten about,
     // which is the point of them.
     let install_library_item =
@@ -1612,12 +1650,13 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     // a file, choosing which folder the project panel shows, moving a library
     // in or out, and saving. The trailing rule keeps all of it off whatever the
     // platform put in File.
-    let items: [&dyn IsMenuItem<tauri::Wry>; 11] = [
+    let items: [&dyn IsMenuItem<tauri::Wry>; 12] = [
         &new_item,
         &open_item,
         &PredefinedMenuItem::separator(app)?,
         &new_project_item,
         &open_project_item,
+        &close_project_item,
         &PredefinedMenuItem::separator(app)?,
         &install_library_item,
         &export_library_item,
@@ -1634,8 +1673,10 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     match file {
         Some(file) => file.insert_items(&items, 0)?,
         // No File submenu on this platform's default: make one. Nothing to sit
-        // below it, so the trailing separator goes.
-        None => menu.append(&Submenu::with_items(app, "File", true, &items[..7])?)?,
+        // below it, so the trailing separator goes — counted from the end, so
+        // that stays true of however many items this list grows to.
+        None => menu
+            .append(&Submenu::with_items(app, "File", true, &items[..items.len() - 1])?)?,
     }
 
     Ok(menu)
@@ -1816,6 +1857,8 @@ pub fn run() {
             save_project,
             recent_session,
             set_recent_session,
+            recent_projects,
+            remember_project,
             list_dir,
             files::create_dir,
             files::create_file,

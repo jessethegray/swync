@@ -45,7 +45,9 @@ fn default_volume() -> f64 {
 }
 
 /// The name a folder's project has when nothing else names it: the folder's.
-fn folder_name(root: &Path) -> String {
+/// Public because the recent-projects list names an entry this way too, for a
+/// folder whose settings file is not there or cannot be read.
+pub fn folder_name(root: &Path) -> String {
     root.file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("project")
