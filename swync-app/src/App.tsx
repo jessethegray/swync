@@ -36,6 +36,7 @@ import {
 import { SearchPanel, type Results as SearchResults } from "./SearchPanel";
 import { ControlsPanel, type Control } from "./ControlsPanel";
 import { SidePanel, isSideTab, type SideTab } from "./SidePanel";
+import { SplashPage, type RecentProject } from "./SplashPage";
 import { toDiagnostic, type Diagnostic } from "./diagnostics";
 import { TransportPanel } from "./TransportPanel";
 import {
@@ -291,8 +292,6 @@ function usePanelResize(edge: "left" | "right", setWidth: (width: number) => voi
   );
 }
 
-const STARTER_CONTENT = `// Write some code, then hit Play (or ⌘,)`;
-
 let tabCounter = 0;
 function makeTab(overrides: Partial<Tab> = {}): Tab {
   tabCounter += 1;
@@ -396,6 +395,10 @@ function App() {
   // Everything that reads a project guards for it, and the patterns panel says
   // so rather than letting unsaved work look saved.
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
+  // The projects there is a way back into, for the splash page. Read from the
+  // backend's own list rather than derived from anything here: it outlives
+  // every project this session opens, which is the point of it.
+  const [recents, setRecents] = useState<RecentProject[]>([]);
   // Bumped to read the tree's open folders again. The backend watches the
   // project's folder and says when something in it changed, so this is raised
   // by the world as well as by the app: see the watch below.
@@ -505,6 +508,12 @@ function App() {
   // that had just been added.
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
+
+  // And which of them is in front, for the same reason: closing a project
+  // silences the engine first, so by the time it asks what it is closing, the
+  // list it was built with is old.
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
 
   // Null when every tab has been closed, which the editor is built to show.
   const activeTab = tabs.find((t) => t.id === activeId) ?? null;
@@ -756,13 +765,23 @@ function App() {
     [report, resyncAudio],
   );
 
-  // What was open last time, fetched once. Restoring a file tab is reading the
-  // file again — nothing about a buffer is kept, so a restored tab is what is
-  // on disk and says so by opening clean.
+  // What each project had open when it was last left, under its own path —
+  // including the one the last run ended in, which is read in below.
   //
-  // A composer is restored by name against the project's patterns, which are
-  // read separately and land after this: those tabs open holding a name, and
-  // the effect below gives them their pattern when it arrives.
+  // The last run's is held rather than opened because the splash page is the
+  // first screen now. A launch that reopened the project would never show it,
+  // and the project you are most likely to want is the one you were last in —
+  // which is why that one is at the head of the list the page offers. So the
+  // session waits here, and the click that opens that project is what spends
+  // it.
+  //
+  // Keyed by project because a tab was opened from inside some project and
+  // only means anything there. Which also makes leaving one non-destructive:
+  // Close Project and opening a different project both put what they closed in
+  // here, so a project you closed is one click from being as it was, and the
+  // one you came from is still whole when you go back to it.
+  const held = useRef(new Map<string, Session>());
+
   useEffect(() => {
     let live = true;
 
@@ -778,56 +797,27 @@ function App() {
       }
       if (!live) return;
 
-      // Before the tabs, so the patterns panel starts its own read as early as
-      // possible — the composers below are waiting on it.
-      if (session.project) setProjectRoot(session.project);
-
-      const restored: Tab[] = [];
-      let active: string | null = null;
-      for (const [i, record] of session.tabs.entries()) {
-        let tab: Tab | null = null;
-        if (record.path) {
-          try {
-            const content = await invoke<string>("read_file", { path: record.path });
-            tab = makeTab({ title: basename(record.path), path: record.path, content });
-          } catch (e) {
-            // Unreadable since — a permission change, or something that is no
-            // longer text. Nothing has been lost: the file is still there, and
-            // the open dialog will say why if it is asked again.
-            console.error(`could not reopen ${record.path}:`, e);
-          }
-        } else if (record.pattern) {
-          tab = makeTab({ title: record.pattern, patternName: record.pattern });
+      // A session that names no project is opened here and now, the way every
+      // session used to be. Holding one would lose it: what the splash page
+      // offers is a list of projects, so a file opened with no project around
+      // it has no row that could bring it back, and the page would be a first
+      // screen that had quietly dropped the work behind it. The page is still
+      // where a launch with nothing at all to open lands.
+      if (session.project === null) {
+        await openSessionTabs(session);
+      } else {
+        held.current.set(session.project, session);
+        // And into the history, because the project the last run was in is by
+        // definition the most recently opened one — normally it is already at
+        // the head and this changes nothing. It is here for the launch whose
+        // session is older than the history file: the project would otherwise
+        // be held with no row to click, which is a session nobody can reach.
+        try {
+          await invoke("remember_project", { root: session.project });
+        } catch (e) {
+          console.error("could not remember the last project:", e);
         }
-        if (!tab) continue;
-        if (session.active === i) active = tab.id;
-        restored.push(tab);
       }
-      if (!live) return;
-
-      // Whatever was opened while this was reading stays open, ahead of what
-      // is being restored under it.
-      //
-      // The app is live for the whole of the read above — the tree is drawn,
-      // the tab bar takes clicks, ⌘N works — and one `read_file` per remembered
-      // tab is long enough to click in. Replacing the list wholesale answered
-      // those clicks with a tab that appeared and then vanished, which is the
-      // app taking work back.
-      const meanwhile = tabsRef.current;
-      const already = new Set(
-        meanwhile.map((t) => t.path).filter((path): path is string => path !== null),
-      );
-      const restoredNow = restored.filter((t) => t.path === null || !already.has(t.path));
-      const opened =
-        restoredNow.length + meanwhile.length > 0
-          ? [...restoredNow, ...meanwhile]
-          : // A first run, or a session whose files have all gone: open on an
-            // empty buffer, which is what the app has always started with.
-            [makeTab({ content: STARTER_CONTENT })];
-      setTabs(opened);
-      // A tab opened by hand is the one being looked at, so it keeps the
-      // editor; the remembered one only takes it when nothing else has.
-      if (meanwhile.length === 0) setActiveId(active ?? opened[0].id);
       setRestoring(false);
     })();
 
@@ -841,6 +831,72 @@ function App() {
   // leave the first one's answer on screen.
   const projectRootRef = useRef(projectRoot);
   projectRootRef.current = projectRoot;
+
+  /**
+   * Open the tabs a session remembers, under whatever is open already.
+   *
+   * Reading the file again is all a file tab is: nothing about a buffer is
+   * kept, so a restored tab is what is on disk and says so by opening clean.
+   *
+   * A composer is restored by name against the project's patterns, which are
+   * read separately and land after this: those tabs open holding a name, and
+   * the effect that matches names to patterns gives them theirs when it
+   * arrives. That is why the caller opens the project first.
+   */
+  const openSessionTabs = useCallback(async (session: Session) => {
+    // Nothing to reopen. Worth returning on rather than falling through:
+    // with no file to read there is no await below, so the merge would run
+    // before the caller's own change to the tabs had reached `tabsRef` — and
+    // put back the tabs it had just closed.
+    if (session.tabs.length === 0) return;
+
+    const restored: Tab[] = [];
+    let active: string | null = null;
+    for (const [i, record] of session.tabs.entries()) {
+      let tab: Tab | null = null;
+      if (record.path) {
+        try {
+          const content = await invoke<string>("read_file", { path: record.path });
+          tab = makeTab({ title: basename(record.path), path: record.path, content });
+        } catch (e) {
+          // Unreadable since — a permission change, or something that is no
+          // longer text. Nothing has been lost: the file is still there, and
+          // the open dialog will say why if it is asked again.
+          console.error(`could not reopen ${record.path}:`, e);
+        }
+      } else if (record.pattern) {
+        tab = makeTab({ title: record.pattern, patternName: record.pattern });
+      }
+      if (!tab) continue;
+      if (session.active === i) active = tab.id;
+      restored.push(tab);
+    }
+
+    // A third project may have been opened while those files were being read,
+    // and these tabs belong to the one that was left behind. The same check
+    // the patterns panel makes, for the same reason.
+    if (projectRootRef.current !== session.project) return;
+
+    // Whatever was opened while this was reading stays open, ahead of what
+    // is being restored under it.
+    //
+    // The app is live for the whole of the read above — the tree is drawn,
+    // the tab bar takes clicks, ⌘N works — and one `read_file` per remembered
+    // tab is long enough to click in. Replacing the list wholesale answered
+    // those clicks with a tab that appeared and then vanished, which is the
+    // app taking work back.
+    const meanwhile = tabsRef.current;
+    const already = new Set(
+      meanwhile.map((t) => t.path).filter((path): path is string => path !== null),
+    );
+    const restoredNow = restored.filter((t) => t.path === null || !already.has(t.path));
+    const opened = [...restoredNow, ...meanwhile];
+    setTabs(opened);
+    // A tab opened by hand is the one being looked at, so it keeps the
+    // editor; the remembered one only takes it when nothing else has.
+    if (meanwhile.length === 0) setActiveId(active ?? opened[0]?.id ?? null);
+  }, []);
+
 
   /**
    * Read a project's drawn patterns into the panel.
@@ -954,7 +1010,14 @@ function App() {
   useEffect(() => {
     // Nothing to remember before the last session has been read — and an empty
     // list written here would be it, forgetting everything.
-    if (restoring) return;
+    //
+    // The splash page is that same emptiness, held open: the launch that lands
+    // there has not spent the session yet, and the row waiting to be clicked
+    // is the only thing that can give those tabs back. A window with nothing
+    // in it has nothing to say about what to open next, so the file keeps what
+    // it already says until something is open again — which is also what makes
+    // Close Project, then quit, resume where the project left off.
+    if (restoring || (projectRoot === null && tabs.length === 0)) return;
 
     const records: SessionTab[] = [];
     let active: number | null = null;
@@ -1046,6 +1109,49 @@ function App() {
     if (projectRoot === null) return;
     void loadProject(projectRoot);
   }, [projectRoot, projectVersion, loadProject]);
+
+  /*
+   * Keep the recent-projects list up to date, both ways.
+   *
+   * Hung on the project itself and not on `projectVersion`: a project is
+   * opened once, and the refreshes that bump that version are the app reading
+   * a folder again — the same project, which has nothing new to say about what
+   * has been opened recently.
+   *
+   * The write comes first and the read after it, so the list the splash page
+   * will show when this project is closed already has it at the head. Closing
+   * the project is what sends you back there, and the read runs again then,
+   * because that is another change to `projectRoot` — which is also how a
+   * project renamed while it was open is listed under its new name.
+   */
+  useEffect(() => {
+    // The launch writes the held project into the history itself, and this
+    // read has to see it. Waiting on the same flag is what orders them.
+    if (restoring) return;
+
+    let live = true;
+    void (async () => {
+      if (projectRoot !== null) {
+        try {
+          await invoke("remember_project", { root: projectRoot });
+        } catch (e) {
+          // A history that could not be written costs the splash page one row
+          // and the piece nothing, so it is logged rather than reported over
+          // a project that has just opened.
+          console.error("could not remember this project:", e);
+        }
+      }
+      if (!live) return;
+      try {
+        setRecents(await invoke<RecentProject[]>("recent_projects"));
+      } catch (e) {
+        console.error("could not read the recent projects:", e);
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [projectRoot, restoring]);
 
   // And back out again as any of it changes. Debounced like the patterns: a
   // fader dragged across its travel is one write, not sixty.
@@ -1371,6 +1477,41 @@ function App() {
   }, [openPath, report]);
 
   /**
+   * Put what a project is about to lose into the hold, under its path.
+   *
+   * Only the tabs that are closing. What stays open — a dirty buffer, a file
+   * from somewhere else — is still in front of you and would come back a
+   * second time, so what is held is exactly the difference leaving made, and
+   * giving it back exactly undoes it.
+   *
+   * The records are the session file's, because they answer the same
+   * question: a tab is a path or the name of a pattern, and one that is
+   * neither has never been anywhere but this window, so there is nothing to
+   * write down that could bring it back. Which is also why it is read off the
+   * refs — a close silences the engine before it gets here, and the lists this
+   * was built with are a render old by then.
+   */
+  const holdTabs = useCallback((root: string, kept: Tab[]) => {
+    const staying = new Set(kept.map((t) => t.id));
+    const records: SessionTab[] = [];
+    let active: number | null = null;
+    for (const tab of tabsRef.current) {
+      if (staying.has(tab.id)) continue;
+      const pattern = tab.patternId
+        ? (patternsRef.current.find((p) => p.id === tab.patternId)?.name ?? null)
+        : (tab.patternName ?? null);
+      if (!tab.path && !pattern) continue;
+      if (tab.id === activeIdRef.current) active = records.length;
+      records.push({ path: pattern ? null : tab.path, pattern });
+    }
+    // Written even when it is empty, so that what the hold says about a
+    // project is always the last time you left it rather than some earlier
+    // one: a project whose tabs you closed by hand before closing it opens
+    // the way you left it, empty.
+    held.current.set(root, { project: root, tabs: records, active });
+  }, []);
+
+  /**
    * Point the app at a folder, however the folder was chosen.
    *
    * The tabs that belong to somewhere else close. A tab is a file, so a file
@@ -1395,12 +1536,16 @@ function App() {
   const chooseProject = useCallback((root: string) => {
     // Reopening the project that is already open is not a move between two of
     // them: its own composers are still drawing its own patterns.
-    const moved = projectRootRef.current !== root;
+    const leaving = projectRootRef.current;
+    const moved = leaving !== root;
     const kept = tabsRef.current.filter((tab) => {
       if (tab.dirty) return true;
       if (tab.patternId || tab.patternName) return !moved;
       return tab.path !== null && isWithin(tab.path, root);
     });
+    // Into the hold before they go, so that coming back here brings the
+    // project back whole rather than bare.
+    if (moved && leaving !== null) holdTabs(leaving, kept);
     setTabs(kept);
     // Closing the tab that was in front hands the editor to what is left, the
     // way closing one by hand does; closing all of them shows the empty state.
@@ -1418,7 +1563,18 @@ function App() {
     setSideTab("project");
     // Remembering it for the next launch is the session writer's job — this is
     // a change to what is open, like any other.
-  }, []);
+
+    // And what this project was holding comes back out, whether it was put
+    // there by the last run or by closing the project a minute ago. Spent as
+    // it is read: these tabs are open again now, and the next time you leave
+    // will say what it is then holding.
+    const resuming = held.current.get(root);
+    held.current.delete(root);
+    // Last, so the project is already set when those tabs arrive: the
+    // composers among them are restored by name and are waiting on the
+    // patterns panel this just started reading.
+    if (resuming) void openSessionTabs(resuming);
+  }, [holdTabs, openSessionTabs]);
 
   /**
    * Start a project in a folder.
@@ -2146,6 +2302,66 @@ function App() {
     }
   }, [activeTab, patternsPath, projectPath, projectRoot, loadPatterns, loadProject, report]);
 
+  /**
+   * Close the project, which is the way back to the splash page.
+   *
+   * The inverse of `chooseProject`, and it keeps the same tabs that one does:
+   * what is only in the app stays — a dirty buffer is the last copy of that
+   * work — and what belonged to the project goes with it, a clean file inside
+   * the folder and every composer, whose rows are cleared below. A clean file
+   * from somewhere else stays, because it never belonged to this project; an
+   * untitled tab that has been typed in is dirty, and the empty one that has
+   * not is nothing to keep.
+   *
+   * What goes is held under the project rather than dropped, so that opening
+   * it again from the page this is about to show puts it back as it was. The
+   * splash page is a screen you can land on by mistake — the menu item is two
+   * rows under Save — and a close that cost you your tabs would make it one.
+   *
+   * It silences the engine first. With no project and no tab the window is
+   * the splash page, which has no transport on it — anything left running
+   * would be playing out of reach, which is the one thing a close must not
+   * leave behind. A take is ended the way the record button ends it rather
+   * than by stopping the engine under it, which would leave the recorder
+   * writing silence into a file nothing is going to close.
+   *
+   * Defined here rather than beside `newProject` and `openProject` because it
+   * needs the transport, which is built below them.
+   */
+  const closeProject = useCallback(async () => {
+    const root = projectRootRef.current;
+    if (root === null) return; // nothing open: the menu item is always enabled
+
+    if (recording !== null) await toggleRecording();
+    else await stop();
+
+    const kept = tabsRef.current.filter((tab) =>
+      tab.dirty ? true : tab.path !== null && !isWithin(tab.path, root),
+    );
+    holdTabs(root, kept);
+    setTabs(kept);
+    setActiveId((current) =>
+      kept.some((t) => t.id === current)
+        ? current
+        : kept.length === 0
+          ? null
+          : kept[kept.length - 1].id,
+    );
+
+    setProjectRoot(null);
+    setProjectName(null);
+    setProjectPath(null);
+    projectFrom.current = null;
+    projectOnDisk.current = null;
+    // Cleared by hand, because everything that reads a project is hung on
+    // there being one and simply stops: rows left in the panel would be this
+    // project's, and an eval sends whatever the panel holds.
+    setPatterns([]);
+    setPatternsPath(null);
+    patternsFrom.current = null;
+    patternsOnDisk.current = null;
+  }, [holdTabs, recording, stop, toggleRecording]);
+
   // The File menu's items arrive as events. Their handlers take new identities
   // on every keystroke, so the listeners reach them through a ref and subscribe
   // once for the life of the app: re-subscribing is asynchronous, and a menu
@@ -2156,6 +2372,7 @@ function App() {
     saveTab,
     newProject,
     openProject,
+    closeProject,
     installLibrary,
     exportLibrary,
   });
@@ -2165,6 +2382,7 @@ function App() {
     saveTab,
     newProject,
     openProject,
+    closeProject,
     installLibrary,
     exportLibrary,
   };
@@ -2176,6 +2394,7 @@ function App() {
       listen("file-save", () => void fileActions.current.saveTab()),
       listen("project-new", () => void fileActions.current.newProject()),
       listen("project-open", () => void fileActions.current.openProject()),
+      listen("project-close", () => void fileActions.current.closeProject()),
       listen("library-install", () => void fileActions.current.installLibrary()),
       listen("library-export", () => void fileActions.current.exportLibrary()),
     ];
@@ -2303,6 +2522,32 @@ function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [play, playCurrent, stop]);
+
+  /*
+   * Nothing open at all: no project, and no file or composer either. That is
+   * every launch, since the session above is read and held rather than
+   * opened, and it is where Close Project lands too. The page stands in for
+   * the whole window rather than for the editor pane alone, because a
+   * transport, a tab bar and the panels all describe a project being worked
+   * on, and there is none.
+   *
+   * It waits for `restoring` all the same, which is now the moment before the
+   * session has been read rather than before the tabs arrive. Shown a frame
+   * early the rows are all still there, but the one that was last open has
+   * nothing held behind it yet — a click landing in that frame would open the
+   * project without its tabs, and silently, since there is nothing to tell
+   * the user they were a frame too quick.
+   */
+  if (!restoring && projectRoot === null && tabs.length === 0) {
+    return (
+      <SplashPage
+        recents={recents}
+        onOpenRecent={chooseProject}
+        onNewProject={() => void newProject()}
+        onOpenProject={() => void openProject()}
+      />
+    );
+  }
 
   return (
     <div className="flex h-screen flex-col bg-neutral-900 text-neutral-100">
