@@ -14,7 +14,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::parser::parser::{Arg, Expr, Ident, SwyncItem, Statement};
+use crate::parser::parser::{Arg, Expr, Ident, Pattern, SwyncItem, Statement};
 use crate::samples::LOAD;
 
 /// What the names written in one file mean everywhere else.
@@ -182,6 +182,32 @@ impl<'a> Scope<'a> {
         !self.shadowed(&name.0) && self.enums.contains(&name.0)
     }
 
+    /// Rewrite the names inside one pattern that refer to something else.
+    ///
+    /// There are two: the enum a member is reached through, and whatever a
+    /// range's ends read. Everything else a pattern holds is written rather
+    /// than read.
+    fn pattern(&mut self, pattern: &mut Pattern) -> Result<(), String> {
+        match pattern {
+            Pattern::Member { ty, .. } => self.ident(ty),
+            Pattern::Range { lo, hi } => {
+                self.expr(lo)?;
+                self.expr(hi)
+            }
+            Pattern::List(items) | Pattern::Or(items) => {
+                for item in items.iter_mut() {
+                    self.pattern(item)?;
+                }
+                Ok(())
+            }
+            Pattern::Wild
+            | Pattern::Num(_)
+            | Pattern::Name(_)
+            | Pattern::Rest
+            | Pattern::Trigger => Ok(()),
+        }
+    }
+
     fn args(&mut self, args: &mut [Arg]) -> Result<(), String> {
         for arg in args {
             // Only the value. An argument's name is a parameter of the callee
@@ -261,6 +287,36 @@ impl<'a> Scope<'a> {
                     Some(otherwise) => self.expr(otherwise),
                     None => Ok(()),
                 }
+            }
+
+            // Each arm gets its own scope, holding what its pattern bound —
+            // and the guard is inside it as well as the body, because that is
+            // where the lowerer reads it.
+            //
+            // A pattern's own names are never mentions. A binding is a name
+            // being written, and the rest — a note, a written value, a
+            // member — is reached through a table or through the enum rather
+            // than through the file's imports. Only the *type* of a member is
+            // a mention: `Section` in `Section.verse` is the same `Section` a
+            // `use` brought in, and the member after it is not, which is
+            // exactly the split `names_an_enum` makes for a chain.
+            Expr::Match { subject, arms } => {
+                self.expr(subject)?;
+                for arm in arms.iter_mut() {
+                    self.pattern(&mut arm.pattern)?;
+                    let mut bound = Vec::new();
+                    arm.pattern.bindings(&mut bound);
+                    self.push(bound.into_iter().map(|id| id.0));
+                    let result = (|| {
+                        if let Some(guard) = &mut arm.guard {
+                            self.expr(guard)?;
+                        }
+                        self.expr(&mut arm.body)
+                    })();
+                    self.pop();
+                    result?;
+                }
+                Ok(())
             }
 
             // The value is outside the binding, the body inside it: `let a = a`

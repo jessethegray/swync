@@ -120,7 +120,7 @@ pub struct ListBuiltin {
 ///
 /// `as` is here for the editor's sake rather than the lexer's — it is only a
 /// keyword inside a `use`, and reads as one wherever it is written.
-pub static KEYWORDS: &[&str] = &["fn", "let", "if", "else", "for", "in", "use", "as", "enum"];
+pub static KEYWORDS: &[&str] = &["fn", "let", "if", "else", "for", "in", "use", "as", "enum", "match"];
 
 pub static UGENS: &[Ugen] = &[
     Ugen {

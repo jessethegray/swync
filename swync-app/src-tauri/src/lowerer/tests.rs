@@ -5153,3 +5153,337 @@ fn an_instrument_is_given_velocity_only_when_it_declares_it() {
     assert!(instruments.declares("touched", "vel"));
     assert!(!instruments.declares("plain", "vel"));
 }
+
+// ---- match ----
+//
+// Written against `ENUMS` above, through `enum_num` and `enum_err`, so a
+// `match` on a tag needs no declarations of its own. Note that a `match`
+// inside `sin(...)` is inside parentheses, where the lexer inserts no
+// terminators — so those arms separate on commas, and the ones that separate
+// on line breaks are written at the top level.
+
+/// The first arm whose pattern fits, which is what makes an earlier arm shadow
+/// a later one exactly as it reads.
+#[test]
+fn the_first_arm_that_fits_is_the_one_that_answers() {
+    assert_eq!(enum_num("match 2 { 1 => 10, 2 => 20, _ => 30 }"), 20.0);
+    assert_eq!(enum_num("match 2 { _ => 30, 2 => 20 }"), 30.0);
+}
+
+/// A bare name binds what is being matched, Rust's rule and the reason `_` is
+/// only needed when the value is not wanted.
+#[test]
+fn a_bare_name_binds_what_is_being_matched() {
+    assert_eq!(enum_num("match 7 { n => n * 2 }"), 14.0);
+}
+
+/// The exception to that rule, and the one this language could not do without:
+/// `c4` in a pattern is the note, not a name for whatever came in. Under the
+/// plain Rust reading the second of these would also be 1, silently, for every
+/// note there is.
+#[test]
+fn a_note_name_in_a_pattern_is_the_note_rather_than_a_binding() {
+    assert_eq!(enum_num("match c4 { c4 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match d4 { c4 => 1, _ => 0 }"), 0.0);
+}
+
+/// The same rule, for the other table a bare name is resolved through.
+#[test]
+fn a_written_note_value_in_a_pattern_is_that_value() {
+    assert_eq!(enum_num("match q { q => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match q { e => 1, _ => 0 }"), 0.0);
+}
+
+/// The two steps that carry no value are spelled in a pattern exactly as they
+/// are in a sequence.
+#[test]
+fn a_rest_and_a_trigger_can_be_matched() {
+    assert_eq!(enum_num("match ` { ` => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match \\ { \\ => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match ` { \\ => 1, _ => 0 }"), 0.0);
+    assert_eq!(enum_num("match \\ { ` => 1, _ => 0 }"), 0.0);
+}
+
+/// A written note value is a hit *of a length*, and the length is a thing it
+/// carries that a bare `\` does not — so it is matched by its own name rather
+/// than swept up by the trigger. Pinned because the other reading is arguable
+/// and would match the difference away.
+#[test]
+fn a_written_note_value_is_not_a_bare_trigger() {
+    assert_eq!(enum_num("match q { \\ => 1, q => 2, _ => 0 }"), 2.0);
+    assert_eq!(enum_num("match \\ { q => 1, _ => 0 }"), 0.0);
+}
+
+/// The shape all of that is for: reading a written sequence step by step and
+/// deciding something about each one.
+#[test]
+fn a_match_can_read_the_steps_of_a_written_sequence() {
+    let steps = "for s in [c4, `, \\] { match s { ` => 0, \\ => 1, n => n } }";
+    assert_eq!(enum_num(&format!("{steps}[0]")), 60.0);
+    assert_eq!(enum_num(&format!("{steps}[1]")), 0.0);
+    assert_eq!(enum_num(&format!("{steps}[2]")), 1.0);
+}
+
+/// And the other direction: an arm answering *with* a rest, which is how a
+/// generated bar leaves gaps in itself.
+#[test]
+fn a_match_can_answer_with_a_rest() {
+    let bs = bindings_of(
+        "fn kit(n) = sin(n)\n         for i in 0..=3 { match i % 2 { 0 => 220, _ => ` } } >> play(kit)\n");
+    assert_eq!(bs[0].source.pattern().cloned().expect("a written pattern"),
+        Pattern::seq(vec![
+            Step::Value(220.0), Step::Rest, Step::Value(220.0), Step::Rest,
+        ]));
+}
+
+/// A pitch class spelled without an octave still binds: there is no sequence
+/// around a `match` to have said which octave, and `a` is too ordinary a name
+/// to lose.
+#[test]
+fn a_note_without_an_octave_binds_like_any_other_name() {
+    assert_eq!(enum_num("match 7 { a => a * 3 }"), 21.0);
+}
+
+/// `..=` is inclusive at both ends here, as it is in a `for`.
+#[test]
+fn a_range_pattern_is_inclusive_at_both_ends() {
+    assert_eq!(enum_num("match 3 { 0..=3 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match 0 { 0..=3 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match 4 { 0..=3 => 1, _ => 0 }"), 0.0);
+}
+
+/// A range's ends are read rather than written, so a name in that position is
+/// a name being used — including a note name, which is most of why anyone
+/// would write one.
+#[test]
+fn a_range_may_be_written_between_two_notes() {
+    assert_eq!(enum_num("match 62 { c4..=c5 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match 80 { c4..=c5 => 1, _ => 0 }"), 0.0);
+}
+
+/// One arm, several values, without the body written out twice.
+#[test]
+fn an_arm_may_answer_to_several_patterns() {
+    assert_eq!(enum_num("match 3 { 1 | 3 | 5 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match 2 { 1 | 3 | 5 => 1, _ => 0 }"), 0.0);
+    // A leading `|` means nothing, so a long list can be written in a column.
+    assert_eq!(enum_num("match 3 { | 1 | 3 => 1, _ => 0 }"), 1.0);
+}
+
+/// A guard is asked after the pattern fits, and a guard that says no leaves the
+/// arm behind entirely — which is the only way a pattern that fit does not win.
+#[test]
+fn a_guard_can_refuse_an_arm_whose_pattern_fitted() {
+    assert_eq!(enum_num("match 9 { n if n > 5 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match 3 { n if n > 5 => 1, _ => 0 }"), 0.0);
+}
+
+/// Which is only possible because the bindings are in scope for the guard as
+/// well as the body.
+#[test]
+fn a_guard_sees_what_its_own_pattern_bound() {
+    assert_eq!(enum_num("match [4, 9] { [a, b] if b > a => b - a, _ => 0 }"), 5.0);
+}
+
+/// A list is matched by length and then element by element, and the elements
+/// are patterns in their own right.
+#[test]
+fn a_list_is_matched_by_length_and_then_by_element() {
+    assert_eq!(enum_num("match [1, 2] { [a, b] => a + b, _ => 0 }"), 3.0);
+    assert_eq!(enum_num("match [1, 2] { [1, b] => b, _ => 0 }"), 2.0);
+    assert_eq!(enum_num("match [1, 2, 3] { [a, b] => a + b, _ => 0 }"), 0.0);
+}
+
+/// A pattern that fits half way round still does not fit, and what it bound on
+/// the way must not be visible to the arm that answers instead.
+#[test]
+fn a_pattern_that_failed_leaves_none_of_its_bindings_behind() {
+    assert_eq!(enum_num("let a = 100 in match [1, 2] { [a, 3] => 0, _ => a }"), 100.0);
+}
+
+/// A tag is matched as a tag: which alternative this is, not what it holds.
+#[test]
+fn an_enum_member_is_matched_as_a_tag() {
+    assert_eq!(enum_num("match Section.verse { Section.verse => 1, Section.chorus => 2 }"), 1.0);
+    assert_eq!(enum_num("match Section.chorus { Section.verse => 1, Section.chorus => 2 }"), 2.0);
+}
+
+/// The check an enum makes possible and nothing else in the language does. It
+/// runs even though the arm that wins is already known, because the member
+/// that is missing is missing whatever tonight's value happens to be.
+#[test]
+fn a_match_on_a_tag_must_have_an_arm_for_every_member() {
+    let err = enum_err("match Section.verse { Section.verse => 1 }");
+    assert!(err.contains("no arm for chorus"), "got: {err}");
+    assert!(err.contains("closed set"), "and says why: {err}");
+}
+
+/// `_` is what says the members you have not named are worth something.
+#[test]
+fn a_wildcard_covers_the_members_that_were_not_named() {
+    assert_eq!(enum_num("match Section.verse { Section.chorus => 2, _ => 1 }"), 1.0);
+    // And so does a binding, which is the same thing with a name on it.
+    // Not `s`, which is the sixteenth — a written note value is a value here,
+    // and that is the rule the note tests above are about.
+    assert_eq!(enum_num("match Section.verse { Section.chorus => 2, part => 1 }"), 1.0);
+}
+
+/// A guarded arm is a condition on a member rather than an answer for it: the
+/// guard may say no, and then the member is uncovered again.
+#[test]
+fn a_guarded_arm_does_not_cover_the_member_it_names() {
+    let err = enum_err(
+        "match Section.verse { Section.verse => 1, Section.chorus if 1 => 2 }");
+    assert!(err.contains("no arm for chorus"), "got: {err}");
+}
+
+/// Nothing fitting is a mistake in the program rather than a number nobody
+/// wrote — the whole of what "compile error, always" buys.
+#[test]
+fn a_match_that_fits_nothing_is_an_error_rather_than_a_value() {
+    let err = enum_err("match 5 { 1 => 1, 2 => 2 }");
+    assert!(err.contains("no arm of this `match` fits 5"), "got: {err}");
+}
+
+/// Arms are chosen while the program compiles, so what is matched on has to be
+/// known then. The message points at the thing that does choose at audio rate.
+#[test]
+fn a_signal_cannot_be_matched_on() {
+    let err = lower_src("match sin(440) { _ => 1 }\n").unwrap_err();
+    assert!(err.contains("select(gate, a, b)"), "got: {err}");
+}
+
+/// The arm that lost builds nothing: a `match` is settled before the graph is,
+/// so no trace of it reaches the audio.
+#[test]
+fn only_the_arm_that_won_reaches_the_graph() {
+    let g = lower_src("match 1 { 1 => sin(440), _ => sin(220) }\n").unwrap();
+    assert_eq!(g.nodes, vec![node(NodeKind::Sin, vec![Const(440.0)])]);
+    assert_eq!(g.output, Some(NodeId(0)));
+}
+
+/// `1 | n` promises the body an `n` only one of the two ways in can deliver.
+#[test]
+fn a_binding_inside_an_alternative_is_refused() {
+    let err = enum_err("match 1 { 1 | n => 1, _ => 0 }");
+    assert!(err.contains("binds inside a `|`"), "got: {err}");
+    // And it is a fact about the text, so an arm nothing was ever going to
+    // reach is refused too.
+    let unreached = enum_err("match 1 { _ => 0, 1 | n => 1 }");
+    assert!(unreached.contains("binds inside a `|`"), "got: {unreached}");
+}
+
+/// `[a, a]` reads as a claim that the two elements are equal and is not one.
+#[test]
+fn a_name_bound_twice_by_one_pattern_is_refused() {
+    let err = enum_err("match [1, 2] { [a, a] => 1, _ => 0 }");
+    assert!(err.contains("bound twice"), "got: {err}");
+}
+
+/// Across two enums the answer is no in a way that is never what was meant, so
+/// it is refused rather than answered — the same call `==` makes.
+#[test]
+fn a_member_of_another_enum_is_refused_rather_than_answered() {
+    let err = enum_err("match Section.verse { Scale.major => 1, _ => 0 }");
+    assert!(err.contains("different enum"), "got: {err}");
+}
+
+/// And in the other direction: a literal written against a tag is an arm that
+/// could never answer.
+#[test]
+fn a_literal_written_against_a_tag_is_refused() {
+    let number = enum_err("match Section.verse { 0 => 1, _ => 0 }");
+    assert!(number.contains("is an enum member"), "got: {number}");
+
+    let member = enum_err("match 5 { Section.verse => 1, _ => 0 }");
+    assert!(member.contains("nothing to compare"), "got: {member}");
+}
+
+/// Both of those are asked of every arm before any of them is tried, so a dead
+/// arm is found even when an earlier one already answered — which is the same
+/// promise the coverage check makes, and the reason a tag is the one value that
+/// can make either.
+#[test]
+fn a_dead_arm_on_a_tag_is_found_even_when_an_earlier_one_answers() {
+    let other = enum_err(
+        "match Section.verse { Section.verse => 1, Scale.major => 2 }");
+    assert!(other.contains("different enum"), "got: {other}");
+
+    let literal = enum_err("match Section.verse { Section.verse => 1, 0 => 2 }");
+    assert!(literal.contains("a number is not one"), "got: {literal}");
+
+    let misspelled = enum_err(
+        "match Section.verse { Section.verse => 1, Section.chorusz => 2 }");
+    assert!(misspelled.contains("no member `chorusz`"), "got: {misspelled}");
+}
+
+/// A dotted pattern whose left side is not an enum says so, and says what the
+/// spelling that binds looks like.
+#[test]
+fn a_dotted_pattern_on_something_that_is_not_an_enum_says_so() {
+    let err = enum_err("match 5 { Nope.x => 1, _ => 0 }");
+    assert!(err.contains("is not an enum here"), "got: {err}");
+}
+
+/// A range with nothing inside it is an arm that could never answer.
+#[test]
+fn a_range_that_runs_backwards_is_refused() {
+    let err = enum_err("match 1 { 3..=0 => 1, _ => 0 }");
+    assert!(err.contains("runs backwards"), "got: {err}");
+}
+
+/// A minus in front of a literal, on both sides.
+#[test]
+fn a_negative_number_can_be_matched() {
+    assert_eq!(enum_num("match -3 { -3 => 1, _ => 0 }"), 1.0);
+    assert_eq!(enum_num("match -3 { -4..=-2 => 1, _ => 0 }"), 1.0);
+}
+
+/// The shape this was added for: a step chosen by where it falls in the bar.
+#[test]
+fn a_match_inside_a_loop_chooses_a_step_at_a_time() {
+    assert_eq!(enum_num("for i in 0..=3 { match i % 2 { 0 => 1, _ => 10 } }[2]"), 1.0);
+    assert_eq!(enum_num("for i in 0..=3 { match i % 2 { 0 => 1, _ => 10 } }[3]"), 10.0);
+}
+
+/// Arms separate on a comma, a line break, or both — the same rule an `enum`'s
+/// members follow, and for the same reason.
+#[test]
+fn arms_may_be_separated_by_lines_commas_or_both() {
+    let one_line = "let x = match 2 { 1 => 10, 2 => 20, _ => 30 }\n";
+    let over_lines = "let x = match 2 {\n  1 => 10\n  2 => 20\n  _ => 30\n}\n";
+    let mixed = "let x = match 2 {\n  1 => 10,\n  2 => 20,\n  _ => 30,\n}\n";
+
+    for src in [one_line, over_lines, mixed] {
+        let g = lower_src(&format!("{src}sin(x)\n"))
+            .unwrap_or_else(|e| panic!("failed on {src:?}: {e}"));
+        assert_eq!(g.nodes[0].inputs[0], Const(20.0), "for {src:?}");
+    }
+}
+
+/// An arm's body may be a block, which is how one with a `let` in it is
+/// written. At the top level rather than inside a call, because a block over
+/// several lines needs the terminators the lexer inserts only outside
+/// parentheses — which is true of an `if` body too and has nothing to do with
+/// `match`.
+#[test]
+fn an_arm_may_answer_with_a_block() {
+    let src = "let x = match 2 {\n                   2 => {\n    let a = 3\n    a * 4\n  }\n                   _ => 0\n               }\n               sin(x)\n";
+    let g = lower_src(src).expect("lower failed");
+    assert_eq!(g.nodes[0].inputs[0], Const(12.0));
+}
+
+/// A `match` with nothing in it is not an expression at all: there is no arm
+/// for it to be worth.
+#[test]
+fn a_match_with_no_arms_is_a_parse_error() {
+    assert!(parse("sin(match 1 { })\n".to_string()).is_err());
+}
+
+/// `_` is told from a binding in the parser rather than reserved in the lexer,
+/// so it is still an ordinary name everywhere it has always been one.
+#[test]
+fn the_wildcard_is_still_an_ordinary_name_outside_a_pattern() {
+    assert_eq!(enum_num("let _ = 5 in _ + 1"), 6.0);
+}
+

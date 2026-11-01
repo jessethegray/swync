@@ -63,6 +63,11 @@ pub enum Token {
     #[token("==")]
     EqEq,
 
+    /// The arrow of a `match` arm: `Section.verse => kick`. Two characters, so
+    /// it wins over `=` by longest match and an assignment still lexes.
+    #[token("=>")]
+    FatArrow,
+
     #[token("for")]
     For,
 
@@ -92,6 +97,9 @@ pub enum Token {
 
     #[token("<")]
     Lt,
+
+    #[token("match")]
+    Match,
 
     #[token("*")]
     Mul,
@@ -124,6 +132,13 @@ pub enum Token {
     /// `*` otherwise reads as a multiplication waiting for its right side.
     #[token("::*")]
     PathGlob,
+
+    /// One `match` arm answering to several patterns: `1 | 3 => hat`.
+    ///
+    /// The language has no other use for the character — there is no bitwise
+    /// or, and nothing infix reads as one — so it is only ever this.
+    #[token("|")]
+    Pipe,
 
     /// Marks a list as one value rather than a sequence to read through:
     /// `play(riff, bzzz, div: '[2, 3])`. Short for `list(2, 3)`.
@@ -200,6 +215,7 @@ impl fmt::Display for Token {
             Token::Else => "else",
             Token::Enum => "enum",
             Token::EqEq => "==",
+            Token::FatArrow => "=>",
             Token::For => "for",
             Token::Function => "fn",
             Token::Ge => ">=",
@@ -210,6 +226,7 @@ impl fmt::Display for Token {
             Token::Le => "<=",
             Token::Let => "let",
             Token::Lt => "<",
+            Token::Match => "match",
             Token::Mul => "*",
             Token::Ne => "!=",
             Token::NewLine => "a line break",
@@ -219,6 +236,7 @@ impl fmt::Display for Token {
             Token::ParensClose => ")",
             Token::PathSep => "::",
             Token::PathGlob => "::*",
+            Token::Pipe => "|",
             Token::Quote => "'",
             Token::Rest => "`",
             Token::Trigger => "\\",
@@ -262,9 +280,12 @@ pub fn insert_terminators(raw: Vec<(Token, Span)>) -> (Vec<Token>, Vec<Span>) {
             Token::Ad | Token::Assign | Token::BraceOpen |
             Token::Colon |
             Token::Comma | Token::Div | Token::Dot | Token::DotDotEq |
-            Token::Else | Token::EqEq | Token::Ge | Token::Gt |
+            Token::Else | Token::EqEq | Token::FatArrow | Token::Ge | Token::Gt |
             Token::Le | Token::Lt | Token::Mul | Token::Ne |
             Token::PathSep | Token::PathGlob |
+            // A `match` arm broken over lines: the arrow, or the `|` of an
+            // alternative given a column of its own.
+            Token::Pipe |
             Token::Percent | Token::ShiftRight | Token::Sub
         )
     }

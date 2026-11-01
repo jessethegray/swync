@@ -2509,7 +2509,8 @@
     "in",
     "use",
     "as",
-    "enum"
+    "enum",
+    "match"
   ],
   "durations": [
     {

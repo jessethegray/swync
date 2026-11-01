@@ -1,0 +1,225 @@
+---
+layout: ../../layouts/Chapter.astro
+slug: match
+---
+
+An `if` asks one question. A `match` takes one value and lays out an answer for
+each of the things it might be.
+
+```swync
+fn kit(n) = sin(n.m2h) * env(0.001, 0.08, 0, 0.05, dur)
+
+for i in 0..=7 {
+  match i % 4 {
+    0 => c2
+    2 => c2
+    _ => `
+  }
+} >> play(kit)
+```
+
+Arms are tried top to bottom, and the first one that fits is the one the whole
+expression is worth. `_` is the wildcard: it fits anything, and it is how you
+say what the values you have not named are worth.
+
+## Every value needs an answer
+
+If nothing fits, that is an error rather than a silent zero:
+
+```swync
+match 5 {
+  1 => c4
+  2 => e4
+}
+```
+
+> no arm of this `match` fits 5
+
+This is the trade the whole feature is built around. A `match` that quietly
+answered with nothing would be a note you never hear, on the night, with
+nothing on the screen to say why.
+
+## Binding
+
+A bare name fits anything and binds it, so the body can use it:
+
+```swync
+fn lead(n) = saw(n.m2h) * env(0.01, 0.1, 0.6, 0.2, dur)
+
+for i in 0..=3 {
+  match i {
+    0 => c4
+    n => c4 + n * 5
+  }
+} >> play(lead)
+```
+
+## Note names are notes
+
+There is one exception, and it is the one this language could not do without.
+A name that spells a note — `c4`, `ef3` — or a written note value — `q`, `e`,
+`h` — is that value in a pattern, not a name being bound:
+
+```swync
+match step {
+  c4 => sub
+  e4 => bell
+  _  => hat
+}
+```
+
+Everywhere else `c4` is the note 60, and in a pattern it is the note 60 too.
+Without that rule this would bind `c4` to whatever came in and take the first
+arm for every note there is — and nothing on the line would say so.
+
+A pitch class written without an octave — `a`, `ef` — is a plain binding, since
+in a `match` there is no sequence around it to have said which octave.
+
+## Rests and triggers
+
+The two steps that carry no value are spelled in a pattern exactly as they are
+in a sequence — `` ` `` for a rest, `\` for a bare hit:
+
+```swync
+for s in [c2, `, \, c2] {
+  match s {
+    `  => 0
+    \ => 1
+    n  => 2
+  }
+}
+```
+
+A `\` is a bare trigger and nothing else. A written note value — `q`, `e` — is
+a hit *of a length*, and the length is something it carries that a `\` does
+not, so it is matched by its own name:
+
+```swync
+match step {
+  \ => hat
+  q  => snare
+  _  => kick
+}
+```
+
+## Ranges and alternatives
+
+`..=` matches a run of values, inclusive at both ends, and `|` lets one arm
+answer to several patterns:
+
+```swync
+match n {
+  0..=59  => bass
+  c4..=c5 => lead
+  1 | 3 | 5 => hat
+  _ => bell
+}
+```
+
+The ends of a range are read rather than bound, so a name there is an ordinary
+name — which is why `c4..=c5` means the octave you would expect.
+
+An alternative may not bind. `1 | n` would promise the body an `n` that only
+one of the two ways in can deliver, so it is refused; write the name in an arm
+of its own instead.
+
+## Guards
+
+An arm can carry a condition, asked after its pattern fits. If the guard says
+no, the arm is skipped and the ones below it still get their turn:
+
+```swync
+match n {
+  x if x > 71 => lead
+  x if x < 48 => sub
+  _ => pad
+}
+```
+
+## Lists
+
+A list pattern matches by length and then element by element, and the elements
+are patterns in their own right:
+
+```swync
+match pair {
+  [0, b] => b
+  [a, b] => a + b
+  _ => 0
+}
+```
+
+## Enums
+
+This is what `match` is really for. An [enum](/tutorial/enums/) is a closed
+set — every member of it is a thing the music can be — so swync can check that
+you have written an arm for each one:
+
+```swync
+enum Section { verse, chorus, bridge }
+
+let part = Section.chorus
+
+fn lead(n) = saw(n.m2h) * env(0.01, 0.1, 0.6, 0.2, dur)
+
+play(match part {
+  Section.verse  => [60, 63, 67],
+  Section.chorus => [72, 75, 79],
+  Section.bridge => [65, 68, 72],
+}, lead)
+```
+
+Delete the `bridge` arm and the program stops compiling:
+
+> this `match` on `Section` has no arm for bridge
+
+That is the message you want to get while you are writing, rather than the
+first time the bridge comes around. Adding a member to the enum later has the
+same effect: every `match` on it says where it now needs a decision.
+
+Every arm is read against the enum before any of them is tried, so a misspelt
+member — or a number written where a member belongs — is caught even in an arm
+that nothing was going to reach. A tag is the only value in the language whose
+alternatives are all known while the program compiles, and this is what that
+buys you.
+
+`_` covers the members you have not named, and switches the check off — which
+is fine when that is what you mean, and worth thinking twice about when it is
+a habit.
+
+A guarded arm does *not* count as covering its member. The guard may say no,
+and then the member is back to having no answer.
+
+## Commas or line breaks
+
+Arms separate on a line break, a comma, or both:
+
+```swync
+let gain = match part { Section.verse => 0.4, Section.chorus => 0.8 }
+```
+
+Inside a call's parentheses there are no line breaks to read — the same rule
+that lets a long argument list wrap — so a `match` written there needs the
+commas, as the `play` above has them.
+
+## When a match happens
+
+A `match` chooses its arm while the program compiles, exactly as an `if` does.
+So what it matches on has to be known then: a number, a note, a member, a list,
+or a slider — which is read as the position it was standing at.
+
+A signal is not known then. It is whatever it happens to be a moment from now,
+and matching on one is refused:
+
+```swync
+match sin(440) {
+  _ => c4
+}
+```
+
+> a `match` chooses its arm while the program compiles … use select(gate, a, b)
+> to choose at audio rate
+
+`select` is the one that chooses at audio rate, sample by sample. A `match` is
+for deciding what the piece *is*, and that decision is made once, where you
+wrote it down.

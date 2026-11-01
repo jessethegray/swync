@@ -83,11 +83,13 @@ const DURATION = /^[whqest]$/;
  * correctly on the very first frame rather than rendering every keyword as a
  * plain variable. The backend list wins once loaded.
  */
-const FALLBACK_KEYWORDS = ["fn", "let", "if", "else", "for", "in", "use", "as", "enum"];
-/** Longest first, so `..=` beats `.`, `>>` and `>=` beat `>`, `==` beats `=`. */
+const FALLBACK_KEYWORDS = ["fn", "let", "if", "else", "for", "in", "use", "as", "enum", "match"];
+/** Longest first, so `..=` beats `.`, `>>` and `>=` beat `>`, `==` and `=>`
+ *  beat `=`. */
 const OPERATORS = [
   "..=",
   ">>",
+  "=>",
   "==",
   "!=",
   "<=",
@@ -100,6 +102,7 @@ const OPERATORS = [
   "=",
   "<",
   ">",
+  "|",
 ];
 
 export interface TokenizerState {
